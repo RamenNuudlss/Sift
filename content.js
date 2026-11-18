@@ -8,10 +8,13 @@
   const BLOCK_DAILY_LIMIT = 100;
   const RATE_LIMIT_PAUSE_MS = 15 * 60 * 1000;
 
-  const GEO_INTERVAL_MS = 400;       // minimum gap between location lookups
+  const GEO_MIN_GAP_MS = 150;          // fastest pace between lookup starts
+  const GEO_PARALLEL = 3;              // lookups in flight at once
+  const GEO_HOLD_MAX_GAP_MS = 1200;    // only hold posts back while lookups are this quick
   const GEO_TIMEOUT_MS = 6000;
-  const GEO_HOLD_MS = 5000;          // max time a post waits for its author's location
+  const GEO_HOLD_MS = 3500;            // longest a post waits for its author's location
   const GEO_FALLBACK_PAUSE_MS = 2 * 60 * 1000;
+  const GEO_RESERVE = 3;               // leave a few calls of X's budget unused
   const GEO_CACHE_MAX = 40000;
 
   let S = { ...SIFT_DEFAULTS };
@@ -19,12 +22,11 @@
   let lastActive = null;
   let scheduled = false;
   const counted = new Set();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  /* ---------------- settings ---------------- */
+  /* ================= settings ================= */
 
-  function escapeRe(s) {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
+  const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   function compile() {
     rules.kw = [];
@@ -34,12 +36,8 @@
       let re;
       try {
         const m = t.match(/^\/(.+)\/([a-z]*)$/i);
-        if (m) {
-          const flags = m[2].includes("i") ? m[2] : m[2] + "i";
-          re = new RegExp(m[1], flags);
-        } else {
-          re = new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRe(t)}(?=$|[^\\p{L}\\p{N}_])`, "iu");
-        }
+        if (m) re = new RegExp(m[1], m[2].includes("i") ? m[2] : m[2] + "i");
+        else re = new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRe(t)}(?=$|[^\\p{L}\\p{N}_])`, "iu");
       } catch { continue; }
       rules.kw.push({ re, rule: r });
     }
@@ -48,9 +46,8 @@
   }
 
   const countryRulesOn = () => S.countries.length > 0 || (S.countryMode === "only" && S.hideUnknownCountry);
-  const geoWanted = () => countryRulesOn() || S.showFlags;
 
-  /* ---------------- stats ---------------- */
+  /* ================= stats ================= */
 
   let pendingStats = { n: 0, blocked: 0, reasons: {} };
   let statsTimer = null;
@@ -79,7 +76,7 @@
     }, 800);
   }
 
-  /* ---------------- page detection ---------------- */
+  /* ================= page + theme ================= */
 
   function onForYou() {
     if (location.pathname !== "/home") return false;
@@ -93,46 +90,51 @@
     return S.fypOnly ? onForYou() : true;
   }
 
-  function syncTheme() {
-    const bg = getComputedStyle(document.body).backgroundColor;
-    const m = bg.match(/\d+/g);
+  // X has three themes: Default (white), Dim (navy) and Lights out (black).
+  let themeCheckedAt = 0;
+  function syncTheme(force) {
+    const now = Date.now();
+    if (!force && now - themeCheckedAt < 2000) return;
+    themeCheckedAt = now;
+    const m = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
     let theme = "dark";
     if (m) {
       const [r, g, b] = m.map(Number);
-      theme = (0.299 * r + 0.587 * g + 0.114 * b) > 140 ? "light" : "dark";
+      if (0.299 * r + 0.587 * g + 0.114 * b > 140) theme = "light";
+      else if (b > 30) theme = "dim";
     }
-    document.documentElement.dataset.siftTheme = theme;
+    if (document.documentElement.dataset.siftTheme !== theme) document.documentElement.dataset.siftTheme = theme;
   }
 
-  /* ---------------- location cache + lookups ---------------- */
+  // Is an element on screen or within `margin` px of it?
+  function nearViewport(el, margin = 600) {
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) return false;
+    return r.bottom > -margin && r.top < innerHeight + margin;
+  }
+
+  /* ================= location cache ================= */
 
   let qid = SIFT_DEFAULT_QID;
-  let geo = {};                       // handle -> { k, n, t }   (k "" = no location)
+  let geo = {};                        // handle -> { k, n, t }   (k "" = no location)
   let geoDirty = false;
   let geoSaveTimer = null;
-  const geoQueue = [];                // newest at the end (looked up first)
-  const geoQueued = new Set();
-  const geoHoldUntil = new Map();     // handle -> timestamp when posts stop waiting
-  let geoPausedUntil = 0;
-  let geoBroken = false;              // query id rejected; wait for page.js to learn a new one
-  let geoLookups = 0;
 
   function geoGet(handle) {
     const e = geo[handle];
     if (!e) return undefined;
-    const ttl = e.k ? SIFT_GEO_TTL : SIFT_GEO_NONE_TTL;
-    if (Date.now() - e.t > ttl) return undefined;
+    if (Date.now() - e.t > (e.k ? SIFT_GEO_TTL : SIFT_GEO_NONE_TTL)) return undefined;
     return e;
   }
 
   function geoSet(handle, basedIn) {
+    if (!handle) return;
     const r = siftGeoResolve(basedIn);
     geo[handle] = r ? { k: r.key, n: r.name, t: Date.now() } : { k: "", n: "", t: Date.now() };
     geoQueued.delete(handle);
-    geoHoldUntil.delete(handle);
+    holds.delete(handle);
     geoDirty = true;
-    clearTimeout(geoSaveTimer);
-    geoSaveTimer = setTimeout(saveGeo, 2500);
+    if (!geoSaveTimer) geoSaveTimer = setTimeout(() => { geoSaveTimer = null; saveGeo(); }, 1000);
     refreshHandle(handle);
     schedule();
   }
@@ -140,107 +142,150 @@
   async function saveGeo() {
     if (!geoDirty) return;
     geoDirty = false;
+    const { siftGeo } = await chrome.storage.local.get("siftGeo");
+    for (const [h, e] of Object.entries(siftGeo || {})) {
+      if (!geo[h] || geo[h].t < e.t) geo[h] = e;  // keep what other tabs learned
+    }
     const keys = Object.keys(geo);
     if (keys.length > GEO_CACHE_MAX) {
       keys.sort((a, b) => geo[a].t - geo[b].t);
       for (const k of keys.slice(0, keys.length - GEO_CACHE_MAX)) delete geo[k];
     }
-    // merge with what other tabs saved meanwhile
-    const { siftGeo } = await chrome.storage.local.get("siftGeo");
-    for (const [h, e] of Object.entries(siftGeo || {})) {
-      if (!geo[h] || geo[h].t < e.t) geo[h] = e;
-    }
     await chrome.storage.local.set({ siftGeo: geo });
   }
 
-  function geoStatus(extra = {}) {
+  /* ================= lookups =================
+     Only authors on or near the screen are looked up, nearest first, and the
+     pace follows X's own rate-limit headers so the budget lasts the window. */
+
+  const geoQueued = new Set();
+  const holds = new Map();             // handle -> time its posts stop waiting
+  let geoPausedUntil = 0;
+  let geoBroken = false;
+  const badQids = new Set();
+  let geoLookups = 0;
+  let geoRemaining = NaN;
+  let geoLimit = NaN;
+  let geoResetAt = 0;
+  let geoNextAt = 0;
+  let geoWorking = false;
+  const geoInFlight = new Set();
+
+  function geoStatus() {
     chrome.storage.local.set({
-      siftGeoStatus: { pausedUntil: geoPausedUntil, broken: geoBroken, lookups: geoLookups, at: Date.now(), ...extra }
+      siftGeoStatus: {
+        pausedUntil: geoPausedUntil, broken: geoBroken, lookups: geoLookups,
+        remaining: Number.isFinite(geoRemaining) ? geoRemaining : null, resetAt: geoResetAt, at: Date.now()
+      }
     });
   }
 
-  function requestGeo(handle, hold = true) {
-    if (geoGet(handle)) return;
-    if (hold && !geoHoldUntil.has(handle) && geoQueued.has(handle)) {
-      // already queued for a label only; start the hold timer now
-      geoHoldUntil.set(handle, Date.now() + GEO_HOLD_MS);
-      setTimeout(() => releaseHold(handle), GEO_HOLD_MS + 50);
-    }
-    if (geoQueued.has(handle)) return;
+  // Spend X's budget freely while plenty is left; once it runs low, stretch
+  // what remains across the rest of the window so labels never stop entirely.
+  function geoGap() {
+    if (!Number.isFinite(geoRemaining) || geoResetAt <= Date.now()) return GEO_MIN_GAP_MS;
+    const left = geoRemaining - GEO_RESERVE;
+    if (left <= 0) return geoResetAt - Date.now() + 1000;
+    const lowWater = Math.max(10, Number.isFinite(geoLimit) ? geoLimit * 0.2 : 10);
+    if (geoRemaining > lowWater) return GEO_MIN_GAP_MS;
+    return Math.max(GEO_MIN_GAP_MS, (geoResetAt - Date.now()) / left);
+  }
+
+  const canLookup = () => !geoBroken && Date.now() >= geoPausedUntil && !!csrf();
+  // Holding posts only makes sense while lookups come back fast.
+  const canHold = () => canLookup() && geoGap() <= GEO_HOLD_MAX_GAP_MS;
+
+  function requestGeo(handle) {
+    if (!handle || geoGet(handle) || geoQueued.has(handle)) return;
     geoQueued.add(handle);
-    geoQueue.push(handle);
-    if (hold) {
-      geoHoldUntil.set(handle, Date.now() + GEO_HOLD_MS);
-      setTimeout(() => releaseHold(handle), GEO_HOLD_MS + 50);
-    }
     pumpGeo();
   }
 
-  function canLookup() {
-    return !geoBroken && Date.now() >= geoPausedUntil && !!csrf();
+  function hold(handle) {
+    if (holds.has(handle)) return true;
+    if (!canHold()) return false;
+    holds.set(handle, Date.now() + GEO_HOLD_MS);
+    setTimeout(() => releaseHold(handle), GEO_HOLD_MS + 30);
+    return true;
   }
 
-  // Stop holding a handle's posts back (lookup slow, paused or failed).
   function releaseHold(handle) {
-    if (!geoHoldUntil.has(handle)) return;
-    geoHoldUntil.delete(handle);
+    if (!holds.delete(handle)) return;
     refreshHandle(handle);
   }
 
   function releaseAllHolds() {
-    for (const h of [...geoHoldUntil.keys()]) releaseHold(h);
+    for (const h of [...holds.keys()]) releaseHold(h);
   }
 
-  const GEO_WORKERS = 2;
-  let geoWorkers = 0;
-  let geoNextAt = 0;
-  let geoRemaining = Infinity;
-  let geoResetAt = 0;
+  function elementsFor(handle) {
+    const h = CSS.escape(handle);
+    return document.querySelectorAll(`article[data-sift-h="${h}"], [data-sift-lh="${h}"]`);
+  }
 
-  // Spread requests evenly over what's left of X's rate-limit window.
-  function geoGap() {
-    if (Number.isFinite(geoRemaining) && geoResetAt > Date.now() && geoRemaining < 30) {
-      return Math.max(GEO_INTERVAL_MS, (geoResetAt - Date.now()) / Math.max(1, geoRemaining - 2));
+  // Next handle to look up: the one closest to the middle of the screen.
+  function nextHandle() {
+    let best = null;
+    let bestDist = Infinity;
+    const mid = innerHeight / 2;
+    for (const h of [...geoQueued]) {
+      if (geoInFlight.has(h)) continue;
+      if (geoGet(h)) { geoQueued.delete(h); continue; }
+      let dist = Infinity;
+      for (const el of elementsFor(h)) {
+        const r = el.getBoundingClientRect();
+        if (!r.width && !r.height) continue;
+        dist = Math.min(dist, Math.abs((r.top + r.bottom) / 2 - mid));
+      }
+      if (dist > innerHeight * 1.5) { geoQueued.delete(h); continue; } // scrolled away; re-queued if it comes back
+      if (holds.has(h)) dist -= 100000;   // posts being held back go first
+      if (dist < bestDist) { bestDist = dist; best = h; }
     }
-    return GEO_INTERVAL_MS;
+    return best;
   }
 
-  function pumpGeo() {
-    queueMicrotask(() => {
-      while (geoWorkers < GEO_WORKERS && geoQueue.length) {
-        geoWorkers++;
-        geoWorker().finally(() => { geoWorkers--; if (geoQueue.length) pumpGeo(); });
+  async function pumpGeo() {
+    if (geoWorking) return;
+    geoWorking = true;
+    try {
+      while (geoQueued.size > geoInFlight.size) {
+        if (!canLookup()) {
+          releaseAllHolds();
+          if (geoBroken || !csrf()) break;              // resumes when page.js reports a new query id
+          await sleep(Math.min(Math.max(1000, geoPausedUntil - Date.now()), 30000));
+          continue;
+        }
+        if (geoInFlight.size >= GEO_PARALLEL) { await sleep(40); continue; }
+        const wait = geoNextAt - Date.now();
+        if (wait > 0) {
+          if (wait > GEO_HOLD_MAX_GAP_MS) releaseAllHolds();
+          await sleep(Math.min(wait, 5000));
+          continue;
+        }
+        const handle = nextHandle();
+        if (!handle) break;
+        geoInFlight.add(handle);
+        geoNextAt = Date.now() + geoGap();
+        lookup(handle).finally(() => {
+          geoInFlight.delete(handle);
+          if (geoQueued.size > geoInFlight.size) pumpGeo();
+        });
       }
-    });
-  }
-
-  async function geoWorker() {
-    while (geoQueue.length) {
-      if (!canLookup()) {
-        releaseAllHolds();
-        await sleep(Math.min(Math.max(2000, geoPausedUntil - Date.now()), 60000));
-        continue;
-      }
-      const wait = geoNextAt - Date.now();
-      if (wait > 0) { await sleep(wait); continue; }
-      const handle = geoQueue.pop();
-      if (!handle) break;
-      if (!geoQueued.has(handle) || geoGet(handle)) { geoQueued.delete(handle); continue; }
-      const h = CSS.escape(handle);
-      if (!document.querySelector(`article[data-sift-h="${h}"], [data-sift-lh="${h}"]`)) {
-        geoQueued.delete(handle);   // scrolled away; will be re-queued if seen again
-        continue;
-      }
-      geoNextAt = Date.now() + geoGap();
-      await lookup(handle);
+    } finally {
+      geoWorking = false;
     }
+  }
+
+  function failLookup(handle) {
+    geoQueued.delete(handle);
+    releaseHold(handle);
   }
 
   async function lookup(handle) {
     const vars = encodeURIComponent(JSON.stringify({ screenName: handle }));
-    let res;
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), GEO_TIMEOUT_MS);
+    let res;
     try {
       res = await fetch(`/i/api/graphql/${qid}/AboutAccountQuery?variables=${vars}`, {
         credentials: "include",
@@ -249,63 +294,50 @@
       });
     } catch {
       clearTimeout(timer);
-      geoQueued.delete(handle);
-      releaseHold(handle);
-      return;
+      return failLookup(handle);
     }
-
     clearTimeout(timer);
-    const remaining = Number(res.headers.get("x-rate-limit-remaining"));
-    const reset = Number(res.headers.get("x-rate-limit-reset")) * 1000;
-    if (res.headers.has("x-rate-limit-remaining") && Number.isFinite(remaining)) {
-      geoRemaining = remaining;
-      if (reset) geoResetAt = reset;
+
+    if (res.headers.has("x-rate-limit-remaining")) {
+      const rem = Number(res.headers.get("x-rate-limit-remaining"));
+      const reset = Number(res.headers.get("x-rate-limit-reset")) * 1000;
+      const lim = Number(res.headers.get("x-rate-limit-limit"));
+      if (Number.isFinite(rem)) geoRemaining = rem;
+      if (Number.isFinite(lim) && lim > 0) geoLimit = lim;
+      if (reset > Date.now()) geoResetAt = reset;
     }
 
     if (res.status === 429) {
-      geoPausedUntil = reset > Date.now() ? reset : Date.now() + GEO_FALLBACK_PAUSE_MS;
-      geoQueue.push(handle); // retry later
+      geoPausedUntil = geoResetAt > Date.now() ? geoResetAt : Date.now() + GEO_FALLBACK_PAUSE_MS;
+      releaseAllHolds();
+      geoStatus();
+      return;                                   // stays queued; retried after the pause
+    }
+    if (res.status === 400 || res.status === 404) {
+      geoBroken = true;                         // stale query id; page.js hands us the new one
+      badQids.add(qid);
       releaseAllHolds();
       geoStatus();
       return;
     }
-    if (res.status === 404 || res.status === 400) {
-      // stale query id; page.js will hand us the new one next time X fetches it
-      geoBroken = true;
-      geoQueued.delete(handle);
-      releaseAllHolds();
-      geoStatus();
-      return;
-    }
-    if (!res.ok) {
-      geoQueued.delete(handle);
-      releaseHold(handle);
-      return;
-    }
+    if (!res.ok) return failLookup(handle);
 
     geoLookups++;
-    if (Number.isFinite(remaining) && remaining <= 1 && reset > Date.now()) geoPausedUntil = reset;
-
     try {
-      const body = await res.json().finally(() => clearTimeout(timer));
+      const body = await res.json();
       const result = body?.data?.user_result_by_screen_name?.result;
-      if (!result && body?.errors?.length) {
-        geoQueued.delete(handle);
-        releaseHold(handle);
-        return;
-      }
+      if (!result && body?.errors?.length) return failLookup(handle);
       geoSet(handle, result?.about_profile?.account_based_in || "");
     } catch {
-      geoQueued.delete(handle);
-      releaseHold(handle);
+      failLookup(handle);
     }
     geoStatus();
   }
 
-  // Messages from page.js (X's own About-this-account requests).
+  // From page.js: X's own "About this account" requests.
   window.addEventListener("message", e => {
     if (e.source !== window || !e.data || e.data.__sift !== true) return;
-    if (e.data.type === "qid" && /^[A-Za-z0-9_-]{10,40}$/.test(e.data.qid)) {
+    if (e.data.type === "qid" && /^[A-Za-z0-9_-]{10,40}$/.test(e.data.qid) && !badQids.has(e.data.qid)) {
       if (e.data.qid !== qid || geoBroken) {
         qid = e.data.qid;
         geoBroken = false;
@@ -318,25 +350,38 @@
     }
   });
 
-  /* ---------------- tweet parsing ---------------- */
+  /* ================= post parsing ================= */
 
-  function getHandle(article) {
-    const link = article.querySelector('[data-testid="User-Name"] a[href^="/"]');
-    if (!link) return null;
-    return siftNormHandle(link.getAttribute("href").split("/")[1]);
+  // Works for timeline posts, replies and quoted posts (which have no profile links).
+  function handleOf(userName) {
+    for (const s of userName.querySelectorAll("span")) {
+      if (s.children.length) continue;
+      const m = s.textContent.trim().match(/^@([A-Za-z0-9_]{1,15})$/);
+      if (m) return m[1].toLowerCase();
+    }
+    const link = userName.querySelector('a[href^="/"]');
+    return link ? siftNormHandle(link.getAttribute("href").split("/")[1]) : null;
+  }
+
+  // The post's own author (not a quoted one).
+  function mainUserName(article) {
+    for (const un of article.querySelectorAll('[data-testid="User-Name"]')) {
+      const quote = un.closest('div[role="link"]');
+      if (!quote || !article.contains(quote)) return un;
+    }
+    return article.querySelector('[data-testid="User-Name"]');
   }
 
   function getStatusId(article) {
     const t = article.querySelector('a[href*="/status/"] time');
-    const href = t?.parentElement?.getAttribute("href") || "";
-    const m = href.match(/\/status\/(\d+)/);
+    const m = (t?.parentElement?.getAttribute("href") || "").match(/\/status\/(\d+)/);
     return m ? m[1] : null;
   }
 
   function getText(article) {
     const parts = [];
     article.querySelectorAll('[data-testid="tweetText"]').forEach(el => parts.push(el.textContent));
-    const name = article.querySelector('[data-testid="User-Name"]');
+    const name = mainUserName(article);
     if (name) parts.push(name.textContent);
     const card = article.querySelector('[data-testid="card.wrapper"]');
     if (card) parts.push(card.textContent);
@@ -352,21 +397,21 @@
     return false;
   }
 
-  const isVerified = a => !!a.querySelector('[data-testid="User-Name"] [data-testid="icon-verified"]');
+  const isVerified = a => !!mainUserName(a)?.querySelector('[data-testid="icon-verified"]');
 
   function isRepost(article) {
     const ctx = article.querySelector('[data-testid="socialContext"]');
     return !!ctx && /repost|retweet/i.test(ctx.textContent);
   }
 
+  /* ================= rules ================= */
+
   function countryHit(handle) {
     const g = geoGet(handle);
     if (!g) return undefined;
     const cont = siftContinentOf(g.k);
-    const label = cont ? `${siftGeoLabel(g.k, g.n)} · ${siftContinentName(cont)}` : siftGeoLabel(g.k, g.n);
-    // a specific country/region rule wins over its continent
+    const label = cont && !g.k.startsWith("r:") ? `${siftGeoLabel(g.k, g.n)} · ${siftContinentName(cont)}` : siftGeoLabel(g.k, g.n);
     const rule = g.k ? rules.countries.get(g.k) || (cont && rules.countries.get("c:" + cont)) : null;
-
     if (S.countryMode === "only") {
       if (!g.k) return S.hideUnknownCountry ? { reason: "country", label: "No location", action: "hide", handle } : null;
       if (S.countries.length && !rule) return { reason: "country", label, action: "hide", handle, key: g.k };
@@ -375,7 +420,7 @@
     return rule ? { reason: "country", label, action: rule.action, handle, key: g.k } : null;
   }
 
-  // Returns a hit, null, or "wait" when the author's country isn't known yet.
+  // A hit, null, or "wait" when the author's country is still loading.
   function evaluate(article, handle) {
     const u = handle ? rules.users.get(handle) : null;
     if (u && u.action === "allow") return null;
@@ -393,7 +438,7 @@
       if (c) return c;
       if (c === undefined) {
         requestGeo(handle);
-        if (S.holdForCountry && geoHoldUntil.has(handle) && canLookup()) return "wait";
+        if (S.holdForCountry && nearViewport(article, 1200) && hold(handle)) return "wait";
       }
     }
 
@@ -402,67 +447,13 @@
     return null;
   }
 
-  /* ---------------- applying ---------------- */
+  /* ================= filtering ================= */
 
-  function cellOf(el) {
-    return el.closest('[data-testid="cellInnerDiv"]') || el.parentElement;
-  }
-
-  function flagHTML(key) {
-    return /^[A-Z]{2}$/.test(key) ? siftFlag(key) : "";
-  }
-
-  /* ---------------- location labels ---------------- */
-
-  function buildLabel(handle, g) {
-    const el = document.createElement("span");
-    el.className = "sift-loc";
-    el.dataset.h = handle;
-    el.dataset.k = g.k;
-    const name = siftGeoLabel(g.k, g.n);
-    const cont = siftContinentOf(g.k);
-    el.title = `Account based in ${name}${cont && !g.k.startsWith("r:") ? ` · ${siftContinentName(cont)}` : ""}`;
-    const f = flagHTML(g.k);
-    if (f) {
-      const fl = document.createElement("span");
-      fl.className = "sift-loc-flag";
-      fl.textContent = f;
-      el.append(fl);
-    }
-    if (!f || S.flagStyle !== "flag") {
-      const t = document.createElement("span");
-      t.className = "sift-loc-name";
-      t.textContent = name;
-      el.append(t);
-    }
-    return el;
-  }
-
-  // Adds "🇯🇵 Japan" after the author's name on every post on the page (quoted posts too).
-  function labelAll() {
-    document.querySelectorAll('article [data-testid="User-Name"]').forEach(un => {
-      const link = un.querySelector('a[href^="/"]');
-      if (!link) return;
-      const handle = siftNormHandle(link.getAttribute("href").split("/")[1]);
-      if (!handle) return;
-      const row = un.firstElementChild || un;
-      const existing = un.querySelector(".sift-loc");
-      if (un.dataset.siftLh !== handle) {
-        existing && existing.remove();
-        un.dataset.siftLh = handle;
-      }
-      const g = geoGet(handle);
-      if (!g) { requestGeo(handle, false); return; }
-      if (!g.k) { existing && existing.remove(); return; }
-      if (existing && existing.dataset.h === handle && existing.dataset.k === g.k) return;
-      existing && existing.remove();
-      row.append(buildLabel(handle, g));
-    });
-  }
+  const cellOf = el => el.closest('[data-testid="cellInnerDiv"]') || el.parentElement;
+  const flagOf = key => (/^[A-Z]{2}$/.test(key) ? siftFlag(key) : "");
 
   function apply(article, hit, statusId) {
     record(hit.reason, statusId);
-
     if (hit.action === "block" && S.autoBlock && hit.handle) queueBlock(hit.handle);
 
     if (S.mode === "remove" || hit.quiet) {
@@ -478,12 +469,11 @@
       <span class="sift-label">Filtered <span class="sift-why"></span></span>
       <span class="sift-spacer"></span>
       ${hit.handle ? `<button type="button" class="sift-btn" data-act="block">Block</button>` : ""}
-      <button type="button" class="sift-btn sift-btn-primary" data-act="show">Show</button>`;
-    const why = bar.querySelector(".sift-why");
-    const f = hit.key ? flagHTML(hit.key) : "";
-    why.textContent = f ? `${f} ${hit.label}` : hit.label;
+      <button type="button" class="sift-btn" data-act="show">Show</button>`;
+    const f = hit.key ? flagOf(hit.key) : "";
+    bar.querySelector(".sift-why").textContent = f ? `${f} ${hit.label}` : hit.label;
 
-    bar.addEventListener("click", async (e) => {
+    bar.addEventListener("click", async e => {
       const btn = e.target.closest("button");
       if (!btn) return;
       e.preventDefault();
@@ -500,7 +490,6 @@
         toast(ok ? `Blocked @${hit.handle}` : `Couldn't block @${hit.handle}`);
       }
     });
-
     article.before(bar);
   }
 
@@ -508,22 +497,22 @@
     const id = getStatusId(article) || "x";
     if (article.dataset.sift === id) return;
     if (article.dataset.sift) unapplyArticle(article);
-    const handle = getHandle(article);
+    const un = mainUserName(article);
+    const handle = un ? handleOf(un) : null;
     article.dataset.sift = id;
     if (handle) article.dataset.siftH = handle;
-
-
     if (article.dataset.siftRevealed) return;
+
     const hit = evaluate(article, handle);
     if (hit === "wait") {
-      cellOf(article).classList.add("sift-wait");
-      article.dataset.siftWait = "1";
+      // Keep the post's space so X's feed keeps loading; just veil it briefly.
+      article.classList.add("sift-wait");
       return;
     }
     if (hit) apply(article, hit, id !== "x" ? id : null);
   }
 
-  // Re-run rules for every visible post by this author (after its location arrives).
+  // Re-run the rules for an author's visible posts once their location is known.
   function refreshHandle(handle) {
     if (!lastActive) return;
     document.querySelectorAll(`article[data-sift-h="${CSS.escape(handle)}"]`).forEach(a => {
@@ -533,17 +522,11 @@
     });
   }
 
-  function scanTweets() {
-    document.querySelectorAll('article[data-testid="tweet"]').forEach(processArticle);
-  }
-
   function scanWhoToFollow() {
     if (!S.hideWhoToFollow) return;
     document.querySelectorAll('[data-testid="primaryColumn"] [data-testid="cellInnerDiv"]:not([data-sift-w])').forEach(cell => {
       if (cell.querySelector("article")) return;
-      const isUserCell = cell.querySelector('[data-testid="UserCell"]');
-      const isShowMore = cell.querySelector('a[href^="/i/connect_people"]');
-      if (!isUserCell && !isShowMore) return;
+      if (!cell.querySelector('[data-testid="UserCell"], a[href^="/i/connect_people"]')) return;
       cell.dataset.siftW = "1";
       cell.classList.add("sift-gone");
       const prev = cell.previousElementSibling;
@@ -556,38 +539,88 @@
   }
 
   function unapplyArticle(article) {
-    article.classList.remove("sift-hidden");
+    article.classList.remove("sift-hidden", "sift-wait");
     const prev = article.previousElementSibling;
     if (prev && prev.classList.contains("sift-bar")) prev.remove();
-    const cell = cellOf(article);
-    cell && cell.classList.remove("sift-gone", "sift-wait");
+    cellOf(article)?.classList.remove("sift-gone");
     delete article.dataset.sift;
-    delete article.dataset.siftWait;
   }
 
   function resetAll() {
     document.querySelectorAll(".sift-bar").forEach(b => b.remove());
-    document.querySelectorAll(".sift-hidden").forEach(el => el.classList.remove("sift-hidden"));
-    document.querySelectorAll(".sift-gone, .sift-wait").forEach(el => el.classList.remove("sift-gone", "sift-wait"));
-    document.querySelectorAll("[data-sift],[data-sift-w],[data-sift-revealed],[data-sift-wait]").forEach(el => {
+    document.querySelectorAll(".sift-hidden, .sift-wait, .sift-gone").forEach(el => el.classList.remove("sift-hidden", "sift-wait", "sift-gone"));
+    document.querySelectorAll("[data-sift],[data-sift-w],[data-sift-revealed]").forEach(el => {
       delete el.dataset.sift;
       delete el.dataset.siftW;
       delete el.dataset.siftRevealed;
-      delete el.dataset.siftWait;
     });
   }
 
+  /* ================= location labels ================= */
+
+  function buildLabel(handle, g) {
+    const el = document.createElement("span");
+    el.className = "sift-loc";
+    el.dataset.h = handle;
+    el.dataset.k = g.k + "|" + S.flagStyle;
+    const name = siftGeoLabel(g.k, g.n);
+    const cont = siftContinentOf(g.k);
+    el.title = `Account based in ${name}${cont && !g.k.startsWith("r:") ? ` · ${siftContinentName(cont)}` : ""}`;
+    const f = flagOf(g.k);
+    if (f) {
+      const fl = document.createElement("span");
+      fl.className = "sift-loc-flag";
+      fl.textContent = f;
+      el.append(fl);
+    }
+    if (!f || S.flagStyle !== "flag") {
+      const t = document.createElement("span");
+      t.className = "sift-loc-name";
+      t.textContent = name;
+      el.append(t);
+    }
+    return el;
+  }
+
+  // "🇯🇵 Japan" right after the author's name, on every post including quotes and replies.
+  function labelAll() {
+    document.querySelectorAll('article [data-testid="User-Name"]').forEach(un => {
+      const handle = handleOf(un);
+      if (!handle) return;
+      const row = un.firstElementChild || un;
+      let label = un.querySelector(":scope .sift-loc");
+      if (un.dataset.siftLh !== handle) {
+        label?.remove();
+        label = null;
+        un.dataset.siftLh = handle;
+      }
+      const g = geoGet(handle);
+      if (!g) {
+        if (nearViewport(un)) requestGeo(handle);
+        return;
+      }
+      if (!g.k) { label?.remove(); return; }
+      if (label && label.dataset.h === handle && label.dataset.k === g.k + "|" + S.flagStyle && label.parentElement === row) return;
+      label?.remove();
+      row.appendChild(buildLabel(handle, g));
+    });
+  }
+
+  /* ================= scan loop ================= */
+
   function scan() {
     scheduled = false;
+    if (!document.body) return;
     const active = isActive();
     if (active !== lastActive) {
       resetAll();
       lastActive = active;
     }
+    if (!S.enabled) return;
     syncTheme();
-    if (S.enabled && S.showFlags) labelAll();
+    if (S.showFlags) labelAll();
     if (!active) return;
-    scanTweets();
+    document.querySelectorAll('article[data-testid="tweet"]').forEach(processArticle);
     scanWhoToFollow();
   }
 
@@ -597,7 +630,7 @@
     requestAnimationFrame(scan);
   }
 
-  /* ---------------- X API helpers ---------------- */
+  /* ================= X API ================= */
 
   function csrf() {
     const m = document.cookie.match(/(?:^|;\s*)ct0=([^;]+)/);
@@ -614,13 +647,11 @@
     };
   }
 
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  /* ================= blocking ================= */
 
-  /* ---------------- blocking ---------------- */
-
-  const queue = [];
-  let pumping = false;
-  let pausedUntil = 0;
+  const blockQueue = [];
+  let blocking = false;
+  let blockPausedUntil = 0;
   let blockedSet = new Set();
   let blockLog = { day: "", count: 0 };
 
@@ -633,7 +664,7 @@
         headers: apiHeaders({ "content-type": "application/x-www-form-urlencoded" }),
         body: `screen_name=${encodeURIComponent(handle)}`
       });
-      if (res.status === 429) { pausedUntil = Date.now() + RATE_LIMIT_PAUSE_MS; return false; }
+      if (res.status === 429) { blockPausedUntil = Date.now() + RATE_LIMIT_PAUSE_MS; return false; }
       if (!res.ok) return false;
       blockedSet.add(handle);
       pendingStats.blocked++;
@@ -646,20 +677,20 @@
   }
 
   function queueBlock(handle) {
-    if (blockedSet.has(handle) || queue.includes(handle)) return;
-    queue.push(handle);
-    pump();
+    if (blockedSet.has(handle) || blockQueue.includes(handle)) return;
+    blockQueue.push(handle);
+    pumpBlocks();
   }
 
-  async function pump() {
-    if (pumping) return;
-    pumping = true;
-    while (queue.length) {
-      if (Date.now() < pausedUntil) { queue.length = 0; break; }
+  async function pumpBlocks() {
+    if (blocking) return;
+    blocking = true;
+    while (blockQueue.length) {
+      if (Date.now() < blockPausedUntil) { blockQueue.length = 0; break; }
       const today = siftToday();
       if (blockLog.day !== today) blockLog = { day: today, count: 0 };
-      if (blockLog.count >= BLOCK_DAILY_LIMIT) { queue.length = 0; break; }
-      const h = queue.shift();
+      if (blockLog.count >= BLOCK_DAILY_LIMIT) { blockQueue.length = 0; break; }
+      const h = blockQueue.shift();
       if (await blockUser(h)) {
         blockLog.count++;
         await chrome.storage.local.set({ siftBlockLog: blockLog });
@@ -667,10 +698,10 @@
       }
       await sleep(BLOCK_INTERVAL_MS);
     }
-    pumping = false;
+    blocking = false;
   }
 
-  /* ---------------- toast ---------------- */
+  /* ================= toast ================= */
 
   let toastEl = null;
   let toastTimer = null;
@@ -680,14 +711,14 @@
       toastEl.className = "sift-toast";
       document.body.appendChild(toastEl);
     }
-    syncTheme();
+    syncTheme(true);
     toastEl.textContent = msg;
     toastEl.classList.add("sift-toast-in");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => toastEl.classList.remove("sift-toast-in"), 2600);
   }
 
-  /* ---------------- boot ---------------- */
+  /* ================= boot ================= */
 
   async function init() {
     S = await siftLoad();
@@ -697,7 +728,7 @@
     geo = st.siftGeo || {};
     if (st.siftQid) qid = st.siftQid;
     compile();
-    syncTheme();
+    syncTheme(true);
     schedule();
 
     new MutationObserver(schedule).observe(document.body, {
@@ -707,9 +738,17 @@
       attributeFilter: ["aria-selected"]
     });
 
+    // X doesn't always add DOM while scrolling cached posts; make sure new
+    // posts entering the screen get looked up.
+    let scrollTimer = null;
+    addEventListener("scroll", () => {
+      if (scrollTimer) return;
+      scrollTimer = setTimeout(() => { scrollTimer = null; schedule(); }, 250);
+    }, { passive: true });
+
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
-      if (changes.siftGeo && changes.siftGeo.newValue === undefined) geo = {}; // cache cleared from popup
+      if (changes.siftGeo && changes.siftGeo.newValue === undefined) geo = {};
       if (!changes.sift) return;
       S = { ...SIFT_DEFAULTS, ...changes.sift.newValue };
       compile();
@@ -719,7 +758,7 @@
       schedule();
     });
 
-    window.addEventListener("pagehide", saveGeo);
+    addEventListener("pagehide", saveGeo);
   }
 
   init();

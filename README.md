@@ -36,9 +36,9 @@
 
 - Sift calls the same endpoint x.com uses for *About this account* (`AboutAccountQuery`), using your existing logged-in session. It doesn't use any other service.
 - Results are cached on your device for 30 days. Accounts with no location are cached for 1 day.
-- Lookups run two at a time, newest posts first, and pace themselves using X's rate-limit headers. If X rate-limits you, posts that are already cached keep filtering, and the popup shows when lookups will resume.
-- **Wait for location** holds a post for up to 5 seconds while its author's country loads, so filtered posts never flash onto your screen. If a lookup is slow or fails, the post is shown.
-- When X changes the query ID, Sift picks up the new one the next time X itself loads an *About this account* panel.
+- Only authors on or near your screen are looked up, nearest first, up to three at a time. Sift spends X's lookup budget freely while plenty is left, then stretches the rest across the rate-limit window. If X rate-limits you, posts that are already cached keep filtering, and the popup shows when lookups will resume.
+- **Wait for location** briefly blurs a post (up to 3.5 seconds, usually under 1) while its author's country loads, so filtered posts never flash onto your screen. The post keeps its space, so X's feed keeps loading normally. If a lookup is slow or fails, the post is shown.
+- When X changes the query ID, Sift picks up the new one the next time X itself loads an *About this account* panel. Sift never wraps or modifies X's own requests.
 
 ## Privacy
 
