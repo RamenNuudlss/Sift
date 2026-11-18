@@ -1,0 +1,141 @@
+.sift-hidden,
+.sift-gone {
+  display: none !important;
+}
+
+:root {
+  --sift-fg: #e7e9ea;
+  --sift-muted: #8b8f94;
+  --sift-line: rgba(255, 255, 255, 0.08);
+  --sift-btn: rgba(255, 255, 255, 0.06);
+  --sift-btn-hover: rgba(255, 255, 255, 0.11);
+  --sift-toast-bg: #f2f2f3;
+  --sift-toast-fg: #0c0c0e;
+}
+
+:root[data-sift-theme="light"] {
+  --sift-fg: #0f1419;
+  --sift-muted: #6b7178;
+  --sift-line: rgba(0, 0, 0, 0.07);
+  --sift-btn: rgba(0, 0, 0, 0.05);
+  --sift-btn-hover: rgba(0, 0, 0, 0.09);
+  --sift-toast-bg: #0c0c0e;
+  --sift-toast-fg: #f2f2f3;
+}
+
+.sift-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  min-height: 40px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--sift-line);
+  color: var(--sift-muted);
+  font: 500 13px/1.3 "Inter", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
+  letter-spacing: -0.005em;
+  cursor: default;
+}
+
+.sift-mark {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  opacity: 0.7;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M4 7h16M7 12h10M10 17h4'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M4 7h16M7 12h10M10 17h4'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.sift-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sift-why {
+  color: var(--sift-fg);
+}
+
+.sift-spacer {
+  flex: 1;
+}
+
+.sift-btn {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 12px;
+  background: var(--sift-btn);
+  color: var(--sift-fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.sift-btn:hover {
+  background: var(--sift-btn-hover);
+}
+
+.sift-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.sift-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 2147483647;
+  transform: translate(-50%, 12px);
+  opacity: 0;
+  pointer-events: none;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: var(--sift-toast-bg);
+  color: var(--sift-toast-fg);
+  font: 500 13px/1.3 "Inter", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.sift-toast.sift-toast-in {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+@font-face {
+  font-family: "Sift Flags";
+  src: url("chrome-extension://__MSG_@@extension_id__/fonts/TwemojiCountryFlags.woff2") format("woff2");
+  unicode-range: U+1F1E6-1F1FF, U+1F3F4, U+E0062-E007F;
+  font-display: swap;
+}
+
+.sift-wait {
+  display: none !important;
+}
+
+.sift-why {
+  font-family: "Sift Flags", "Inter", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
+}
+
+.sift-flag {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  font-family: "Sift Flags", "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
+  font-size: 15px;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: default;
+  user-select: none;
+}
+
+.sift-flag-region {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font: 500 11px/1.4 "Inter", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
+  color: var(--sift-muted);
+  background: var(--sift-btn);
+}

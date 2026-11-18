@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Sift</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4"/></svg>
+      <span class="name">Sift</span>
+    </div>
+    <div class="status">
+      <span class="status-text" id="statusText">Filtering For You</span>
+      <label class="switch" title="Turn Sift on or off">
+        <input type="checkbox" id="enabled">
+        <span class="track"><span class="thumb"></span></span>
+      </label>
+    </div>
+  </header>
+
+  <section class="stats" aria-label="Statistics">
+    <div class="stat">
+      <span class="num" id="sToday">0</span>
+      <span class="lbl">Filtered today</span>
+    </div>
+    <div class="stat">
+      <span class="num" id="sTotal">0</span>
+      <span class="lbl">All time</span>
+    </div>
+    <div class="stat">
+      <span class="num" id="sBlocked">0</span>
+      <span class="lbl">Blocked</span>
+    </div>
+  </section>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" class="tab" data-tab="countries" aria-selected="true">Countries <span class="count" id="cCountries"></span></button>
+    <button role="tab" class="tab" data-tab="words" aria-selected="false">Words <span class="count" id="cWords"></span></button>
+    <button role="tab" class="tab" data-tab="accounts" aria-selected="false">Accounts <span class="count" id="cAccounts"></span></button>
+    <button role="tab" class="tab" data-tab="options" aria-selected="false">Options</button>
+    <span class="ink" aria-hidden="true"></span>
+  </nav>
+
+  <main>
+    <!-- Countries -->
+    <section class="panel" id="panel-countries" role="tabpanel">
+      <div class="seg wide" id="countryModeSeg">
+        <button type="button" data-v="hide">Hide selected</button>
+        <button type="button" data-v="only">Only show selected</button>
+      </div>
+      <div class="combo">
+        <form class="adder" id="countryForm" autocomplete="off">
+          <svg class="search" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+          <input id="countryInput" type="text" placeholder="Search countries or regions" spellcheck="false" role="combobox" aria-expanded="false" aria-controls="countryResults">
+          <div class="pick" data-for="country">
+            <button type="button" data-v="hide" aria-pressed="true">Hide</button>
+            <button type="button" data-v="block" aria-pressed="false">Block</button>
+          </div>
+        </form>
+        <ul class="results" id="countryResults" role="listbox" hidden></ul>
+      </div>
+      <ul class="list" id="countryList"></ul>
+      <div class="empty" id="countryEmpty">
+        <p class="empty-title">No countries selected</p>
+        <p class="empty-sub" id="countryEmptySub">Posts from accounts X lists as based in a country you add here are filtered out of your feed.</p>
+      </div>
+      <div class="seen" id="seenWrap" hidden>
+        <p class="group-label">Seen in your feed</p>
+        <div class="chips" id="seenChips"></div>
+      </div>
+      <p class="geo-status" id="geoStatus"></p>
+    </section>
+
+    <!-- Words -->
+    <section class="panel" id="panel-words" role="tabpanel" hidden>
+      <form class="adder" id="wordForm" autocomplete="off">
+        <input id="wordInput" type="text" placeholder="Word, phrase or /regex/" spellcheck="false">
+        <div class="pick" data-for="word">
+          <button type="button" data-v="hide" aria-pressed="true">Hide</button>
+          <button type="button" data-v="block" aria-pressed="false">Block</button>
+        </div>
+        <button class="add" type="submit" aria-label="Add rule">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </form>
+      <p class="error" id="wordError" hidden></p>
+      <ul class="list" id="wordList"></ul>
+      <div class="empty" id="wordEmpty">
+        <p class="empty-title">No word rules yet</p>
+        <p class="empty-sub">Posts containing a word or phrase you add here disappear from your For You feed. Wrap a pattern in slashes to use a regex.</p>
+      </div>
+    </section>
+
+    <!-- Accounts -->
+    <section class="panel" id="panel-accounts" role="tabpanel" hidden>
+      <form class="adder" id="userForm" autocomplete="off">
+        <input id="userInput" type="text" placeholder="@handle or link" spellcheck="false">
+        <div class="pick" data-for="user">
+          <button type="button" data-v="hide" aria-pressed="true">Hide</button>
+          <button type="button" data-v="block" aria-pressed="false">Block</button>
+          <button type="button" data-v="allow" aria-pressed="false">Allow</button>
+        </div>
+        <button class="add" type="submit" aria-label="Add account">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </form>
+      <p class="error" id="userError" hidden></p>
+      <ul class="list" id="userList"></ul>
+      <div class="empty" id="userEmpty">
+        <p class="empty-title">No accounts yet</p>
+        <p class="empty-sub">Hide or block specific accounts. Allowed accounts always show, even if a word rule matches. You can also right-click any profile link on X.</p>
+      </div>
+    </section>
+
+    <!-- Options -->
+    <section class="panel" id="panel-options" role="tabpanel" hidden>
+      <div class="group">
+        <label class="row">
+          <span class="row-text">
+            <span class="row-title">Only filter For You</span>
+            <span class="row-sub">Leave Following, profiles and search untouched</span>
+          </span>
+          <span class="switch"><input type="checkbox" data-opt="fypOnly"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <div class="row">
+          <span class="row-text">
+            <span class="row-title">Filtered posts</span>
+            <span class="row-sub">Collapse leaves a slim bar you can reopen</span>
+          </span>
+          <div class="seg" id="modeSeg">
+            <button type="button" data-v="collapse">Collapse</button>
+            <button type="button" data-v="remove">Remove</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="group-label">Countries</p>
+      <div class="group">
+        <label class="row">
+          <span class="row-text">
+            <span class="row-title">Show flags on posts</span>
+            <span class="row-sub">Next to the timestamp, from X’s “Account based in”</span>
+          </span>
+          <span class="switch"><input type="checkbox" data-opt="showFlags"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="row-text">
+            <span class="row-title">Wait for location</span>
+            <span class="row-sub">Holds a post up to 5 s while its author’s country loads, so filtered posts never flash in</span>
+          </span>
+          <span class="switch"><input type="checkbox" data-opt="holdForCountry"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="row-text">
+            <span class="row-title">Hide accounts with no location</span>
+            <span class="row-sub">Only applies in “Only show selected” mode</span>
+          </span>
+          <span class="switch"><input type="checkbox" data-opt="hideUnknownCountry"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+      </div>
+
+      <p class="group-label">Clean up</p>
+      <div class="group">
+        <label class="row">
+          <span class="row-text"><span class="row-title">Hide promoted posts</span></span>
+          <span class="switch"><input type="checkbox" data-opt="hidePromoted"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="row-text"><span class="row-title">Hide “Who to follow”</span></span>
+          <span class="switch"><input type="checkbox" data-opt="hideWhoToFollow"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="row-text">
+            <span class="row-title">Hide verified accounts</span>
+            <span class="row-sub">Any checkmark, unless the account is allowed</span>
+          </span>
+          <span class="switch"><input type="checkbox" data-opt="hideVerified"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="row-text"><span class="row-title">Hide reposts</span></span>
+          <span class="switch"><input type="checkbox" data-opt="hideReposts"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+      </div>
+
+      <p class="group-label">Blocking</p>
+      <div class="group">
+        <label class="row">
+          <span class="row-text">
+            <span class="row-title">Auto-block on Block rules</span>
+            <span class="row-sub">Blocks the author on X when a Block rule matches. One every 5 s, up to 100 a day.</span>
+          </span>
+          <span class="switch"><input type="checkbox" data-opt="autoBlock"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+      </div>
+
+      <p class="group-label">Data</p>
+      <div class="group data">
+        <button type="button" class="ghost" id="exportBtn">Export rules</button>
+        <button type="button" class="ghost" id="importBtn">Import rules</button>
+        <button type="button" class="ghost" id="clearGeo">Clear locations</button>
+        <button type="button" class="ghost danger" id="resetStats">Reset stats</button>
+        <input type="file" id="importFile" accept="application/json" hidden>
+      </div>
+    </section>
+  </main>
+
+  <script src="shared.js"></script>
+  <script src="geo.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
