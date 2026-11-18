@@ -423,6 +423,8 @@
   function renderOptions() {
     $$("[data-opt]").forEach(el => (el.checked = !!S[el.dataset.opt]));
     $$("#modeSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === S.mode));
+    $$("#flagStyleSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === S.flagStyle));
+    $("#flagStyleRow").classList.toggle("disabled", !S.showFlags);
   }
 
   $$("[data-opt]").forEach(el =>
@@ -430,8 +432,17 @@
       S[el.dataset.opt] = el.checked;
       save();
       renderStatus();
+      renderOptions();
     })
   );
+
+  $("#flagStyleSeg").addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    S.flagStyle = b.dataset.v;
+    save();
+    renderOptions();
+  });
 
   $("#modeSeg").addEventListener("click", e => {
     const b = e.target.closest("button");

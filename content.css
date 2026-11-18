@@ -120,22 +120,27 @@
   font-family: "Sift Flags", "Inter", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
 }
 
-.sift-flag {
+.sift-loc {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
+  flex: none;
   margin-left: 6px;
-  font-family: "Sift Flags", "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
-  font-size: 15px;
-  line-height: 1;
+  color: var(--sift-muted);
+  font: 400 14px/1 "Sift Flags", "Inter", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
+  white-space: nowrap;
   vertical-align: middle;
   cursor: default;
   user-select: none;
 }
 
-.sift-flag-region {
-  padding: 1px 6px;
-  border-radius: 999px;
-  font: 500 11px/1.4 "Inter", "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
-  color: var(--sift-muted);
-  background: var(--sift-btn);
+.sift-loc-flag {
+  font-family: "Sift Flags", "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.sift-loc-name {
+  font-size: 13.5px;
+  letter-spacing: -0.005em;
 }

@@ -134,6 +134,7 @@
     clearTimeout(geoSaveTimer);
     geoSaveTimer = setTimeout(saveGeo, 2500);
     refreshHandle(handle);
+    schedule();
   }
 
   async function saveGeo() {
@@ -158,12 +159,20 @@
     });
   }
 
-  function requestGeo(handle) {
-    if (geoQueued.has(handle) || geoGet(handle)) return;
+  function requestGeo(handle, hold = true) {
+    if (geoGet(handle)) return;
+    if (hold && !geoHoldUntil.has(handle) && geoQueued.has(handle)) {
+      // already queued for a label only; start the hold timer now
+      geoHoldUntil.set(handle, Date.now() + GEO_HOLD_MS);
+      setTimeout(() => releaseHold(handle), GEO_HOLD_MS + 50);
+    }
+    if (geoQueued.has(handle)) return;
     geoQueued.add(handle);
     geoQueue.push(handle);
-    geoHoldUntil.set(handle, Date.now() + GEO_HOLD_MS);
-    setTimeout(() => releaseHold(handle), GEO_HOLD_MS + 50);
+    if (hold) {
+      geoHoldUntil.set(handle, Date.now() + GEO_HOLD_MS);
+      setTimeout(() => releaseHold(handle), GEO_HOLD_MS + 50);
+    }
     pumpGeo();
   }
 
@@ -217,7 +226,8 @@
       const handle = geoQueue.pop();
       if (!handle) break;
       if (!geoQueued.has(handle) || geoGet(handle)) { geoQueued.delete(handle); continue; }
-      if (!document.querySelector(`article[data-sift-h="${CSS.escape(handle)}"]`)) {
+      const h = CSS.escape(handle);
+      if (!document.querySelector(`article[data-sift-h="${h}"], [data-sift-lh="${h}"]`)) {
         geoQueued.delete(handle);   // scrolled away; will be re-queued if seen again
         continue;
       }
@@ -402,21 +412,52 @@
     return /^[A-Z]{2}$/.test(key) ? siftFlag(key) : "";
   }
 
-  function addFlag(article, handle) {
-    if (!S.showFlags || !handle) return;
-    const g = geoGet(handle);
-    if (!g || !g.k) return;
-    const time = article.querySelector('[data-testid="User-Name"] a[href*="/status/"] time');
-    const anchor = time?.parentElement;
-    if (!anchor || anchor.nextElementSibling?.classList.contains("sift-flag")) return;
+  /* ---------------- location labels ---------------- */
+
+  function buildLabel(handle, g) {
     const el = document.createElement("span");
-    el.className = "sift-flag";
-    const label = siftGeoLabel(g.k, g.n);
-    el.title = `Account based in ${label}`;
+    el.className = "sift-loc";
+    el.dataset.h = handle;
+    el.dataset.k = g.k;
+    const name = siftGeoLabel(g.k, g.n);
+    const cont = siftContinentOf(g.k);
+    el.title = `Account based in ${name}${cont && !g.k.startsWith("r:") ? ` · ${siftContinentName(cont)}` : ""}`;
     const f = flagHTML(g.k);
-    if (f) el.textContent = f;
-    else { el.classList.add("sift-flag-region"); el.textContent = label; }
-    anchor.after(el);
+    if (f) {
+      const fl = document.createElement("span");
+      fl.className = "sift-loc-flag";
+      fl.textContent = f;
+      el.append(fl);
+    }
+    if (!f || S.flagStyle !== "flag") {
+      const t = document.createElement("span");
+      t.className = "sift-loc-name";
+      t.textContent = name;
+      el.append(t);
+    }
+    return el;
+  }
+
+  // Adds "🇯🇵 Japan" after the author's name on every post on the page (quoted posts too).
+  function labelAll() {
+    document.querySelectorAll('article [data-testid="User-Name"]').forEach(un => {
+      const link = un.querySelector('a[href^="/"]');
+      if (!link) return;
+      const handle = siftNormHandle(link.getAttribute("href").split("/")[1]);
+      if (!handle) return;
+      const row = un.firstElementChild || un;
+      const existing = un.querySelector(".sift-loc");
+      if (un.dataset.siftLh !== handle) {
+        existing && existing.remove();
+        un.dataset.siftLh = handle;
+      }
+      const g = geoGet(handle);
+      if (!g) { requestGeo(handle, false); return; }
+      if (!g.k) { existing && existing.remove(); return; }
+      if (existing && existing.dataset.h === handle && existing.dataset.k === g.k) return;
+      existing && existing.remove();
+      row.append(buildLabel(handle, g));
+    });
   }
 
   function apply(article, hit, statusId) {
@@ -471,8 +512,6 @@
     article.dataset.sift = id;
     if (handle) article.dataset.siftH = handle;
 
-    if (handle && S.showFlags && !geoGet(handle)) requestGeo(handle);
-    addFlag(article, handle);
 
     if (article.dataset.siftRevealed) return;
     const hit = evaluate(article, handle);
@@ -488,7 +527,7 @@
   function refreshHandle(handle) {
     if (!lastActive) return;
     document.querySelectorAll(`article[data-sift-h="${CSS.escape(handle)}"]`).forEach(a => {
-      if (a.dataset.siftRevealed) { addFlag(a, handle); return; }
+      if (a.dataset.siftRevealed) return;
       unapplyArticle(a);
       processArticle(a);
     });
@@ -520,7 +559,6 @@
     article.classList.remove("sift-hidden");
     const prev = article.previousElementSibling;
     if (prev && prev.classList.contains("sift-bar")) prev.remove();
-    article.querySelectorAll(".sift-flag").forEach(f => f.remove());
     const cell = cellOf(article);
     cell && cell.classList.remove("sift-gone", "sift-wait");
     delete article.dataset.sift;
@@ -528,7 +566,7 @@
   }
 
   function resetAll() {
-    document.querySelectorAll(".sift-bar, .sift-flag").forEach(b => b.remove());
+    document.querySelectorAll(".sift-bar").forEach(b => b.remove());
     document.querySelectorAll(".sift-hidden").forEach(el => el.classList.remove("sift-hidden"));
     document.querySelectorAll(".sift-gone, .sift-wait").forEach(el => el.classList.remove("sift-gone", "sift-wait"));
     document.querySelectorAll("[data-sift],[data-sift-w],[data-sift-revealed],[data-sift-wait]").forEach(el => {
@@ -545,8 +583,9 @@
     if (active !== lastActive) {
       resetAll();
       lastActive = active;
-      if (active) syncTheme();
     }
+    syncTheme();
+    if (S.enabled && S.showFlags) labelAll();
     if (!active) return;
     scanTweets();
     scanWhoToFollow();
@@ -675,6 +714,7 @@
       S = { ...SIFT_DEFAULTS, ...changes.sift.newValue };
       compile();
       resetAll();
+      document.querySelectorAll(".sift-loc").forEach(l => l.remove());
       lastActive = null;
       schedule();
     });

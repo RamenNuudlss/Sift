@@ -142,11 +142,18 @@
       <div class="group">
         <label class="row">
           <span class="row-text">
-            <span class="row-title">Show flags on posts</span>
-            <span class="row-sub">Next to the timestamp, from X’s “Account based in”</span>
+            <span class="row-title">Show location on every post</span>
+            <span class="row-sub">Next to the author’s name, everywhere on X, from “Account based in”</span>
           </span>
           <span class="switch"><input type="checkbox" data-opt="showFlags"><span class="track"><span class="thumb"></span></span></span>
         </label>
+        <div class="row" id="flagStyleRow">
+          <span class="row-text"><span class="row-title">Label style</span></span>
+          <div class="seg" id="flagStyleSeg">
+            <button type="button" data-v="full">Flag + country</button>
+            <button type="button" data-v="flag">Flag</button>
+          </div>
+        </div>
         <label class="row">
           <span class="row-text">
             <span class="row-title">Wait for location</span>

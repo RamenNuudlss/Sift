@@ -20,7 +20,7 @@ Filter your X For You feed by country, continent, words and accounts. Hide posts
 Sift cleans up your X (Twitter) For You feed.
 
 FILTER BY COUNTRY OR CONTINENT
-X shows where an account is based in its "About this account" panel. Sift reads that for each author in your feed. Then it either hides posts from the countries, regions or whole continents you pick, or shows only the ones you allow. A small flag next to each post shows where it's from.
+X shows where an account is based in its "About this account" panel. Sift reads that for each author in your feed. Then it either hides posts from the countries, regions or whole continents you pick, or shows only the ones you allow. Every post shows where it's coming from, with a flag and country right next to the author's name.
 
 FILTER BY WORDS AND ACCOUNTS
 • Words, phrases or /regex/, with whole-word matching

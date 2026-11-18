@@ -331,3 +331,5 @@ body.only .pick[data-for="country"] { display: none; }
 .cont.block { color: var(--danger); border-color: rgba(255, 107, 94, .45); }
 .cont.show { color: var(--accent); border-color: rgba(201, 242, 77, .45); }
 .term .kind { margin-left: 8px; color: var(--faint); font-size: 11.5px; }
+
+.row.disabled { opacity: .45; pointer-events: none; }

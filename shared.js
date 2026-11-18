@@ -12,7 +12,8 @@ const SIFT_DEFAULTS = {
   users: [],                 // [{ handle, action: "hide" | "block" | "allow" }]
   countries: [],             // [{ key: "JP" | "r:europe", name, action: "hide" | "block" }]
   countryMode: "hide",       // "hide" = hide selected, "only" = only show selected
-  showFlags: true,
+  showFlags: true,           // location label next to every author name
+  flagStyle: "full",        // "full" = flag + country, "flag" = flag only
   holdForCountry: true,
   hideUnknownCountry: false
 };

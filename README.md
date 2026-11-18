@@ -14,7 +14,7 @@
 
 - **Country filtering.** X shows where an account is based in its *About this account* panel. Sift reads that for each author in your feed. Then it either hides or blocks posts from the countries, regions or whole continents you pick, or shows only the ones you allow.
 - **Continents.** One click covers Africa, Asia, Europe, North America, South America or Oceania, including the regions X reports, like "West Asia". A rule for a specific country overrides its continent.
-- **Flags on posts.** A small flag next to each post's timestamp. It renders properly on Windows too.
+- **Location on every post.** Each author's flag and country appear right after their name, everywhere on X, including quoted posts. You can switch to flag only. Flags render properly on Windows too.
 - **Word rules.** Words, phrases or `/regex/`. Matching is whole-word, so `crypto` won't catch "cryptography".
 - **Account rules.** Hide, block or always allow specific accounts. You can also right-click any profile link on X.
 - **Hide or block.** Any rule can just hide posts, or block the author on X for you. Auto-block is off until you turn it on.
