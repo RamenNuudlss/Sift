@@ -8,13 +8,7 @@
   const BLOCK_DAILY_LIMIT = 100;
   const RATE_LIMIT_PAUSE_MS = 15 * 60 * 1000;
 
-  const GEO_MIN_GAP_MS = 150;          // fastest pace between lookup starts
-  const GEO_PARALLEL = 3;              // lookups in flight at once
-  const GEO_HOLD_MAX_GAP_MS = 1200;    // only hold posts back while lookups are this quick
   const GEO_TIMEOUT_MS = 6000;
-  const GEO_HOLD_MS = 3500;            // longest a post waits for its author's location
-  const GEO_FALLBACK_PAUSE_MS = 2 * 60 * 1000;
-  const GEO_RESERVE = 3;               // leave a few calls of X's budget unused
   const GEO_CACHE_MAX = 40000;
 
   let S = { ...SIFT_DEFAULTS };
@@ -113,30 +107,62 @@
     return r.bottom > -margin && r.top < innerHeight + margin;
   }
 
-  /* ================= location cache ================= */
+  /* ================= location cache =================
+     Entry sources:  s:"x"  X's own "Account based in" (authoritative)
+                     s:"p"  guessed from the profile location text
+     k "" means X reports no location for the account. */
 
+  const GEO_PROFILE_TTL = 7 * 24 * 3600 * 1000;
   let qid = SIFT_DEFAULT_QID;
-  let geo = {};                        // handle -> { k, n, t }   (k "" = no location)
+  let geo = {};
   let geoDirty = false;
   let geoSaveTimer = null;
+  const profileTried = new Set();      // handles whose profile text we've already parsed
 
   function geoGet(handle) {
     const e = geo[handle];
     if (!e) return undefined;
-    if (Date.now() - e.t > (e.k ? SIFT_GEO_TTL : SIFT_GEO_NONE_TTL)) return undefined;
+    const ttl = e.s === "p" ? GEO_PROFILE_TTL : e.k ? SIFT_GEO_TTL : SIFT_GEO_NONE_TTL;
+    if (Date.now() - e.t > ttl) return undefined;
     return e;
   }
 
-  function geoSet(handle, basedIn) {
-    if (!handle) return;
-    const r = siftGeoResolve(basedIn);
-    geo[handle] = r ? { k: r.key, n: r.name, t: Date.now() } : { k: "", n: "", t: Date.now() };
-    geoQueued.delete(handle);
-    holds.delete(handle);
+  // What filtering may rely on: X's answer, or the profile guess if allowed.
+  function geoUsable(handle) {
+    const e = geoGet(handle);
+    if (!e) return undefined;
+    if (e.s === "p" && !S.useProfileLocation) return undefined;
+    return e;
+  }
+
+  const isAuthoritative = h => { const e = geoGet(h); return !!e && e.s !== "p"; };
+
+  function geoPut(handle, entry) {
+    geo[handle] = { ...entry, t: Date.now() };
     geoDirty = true;
     if (!geoSaveTimer) geoSaveTimer = setTimeout(() => { geoSaveTimer = null; saveGeo(); }, 1000);
     refreshHandle(handle);
     schedule();
+  }
+
+  // X's authoritative answer.
+  function geoSet(handle, basedIn) {
+    if (!handle) return;
+    geoQueued.delete(handle);
+    const r = siftGeoResolve(basedIn);
+    geoPut(handle, r ? { k: r.key, n: r.name, s: "x" } : { k: "", n: "", s: "x" });
+  }
+
+  // A profile-location guess; never overrides X's answer.
+  function geoGuess(handle, text) {
+    if (!handle || profileTried.has(handle)) return;
+    profileTried.add(handle);
+    if (isAuthoritative(handle)) return;
+    const code = siftGuessCountry(text);
+    if (!code) return;
+    const prev = geoGet(handle);
+    if (prev && prev.s === "p" && prev.k === code) return;
+    geoPut(handle, { k: code, n: siftGeoLabel(code), s: "p", r: String(text).slice(0, 40) });
   }
 
   async function saveGeo() {
@@ -144,7 +170,9 @@
     geoDirty = false;
     const { siftGeo } = await chrome.storage.local.get("siftGeo");
     for (const [h, e] of Object.entries(siftGeo || {})) {
-      if (!geo[h] || geo[h].t < e.t) geo[h] = e;  // keep what other tabs learned
+      const mine = geo[h];
+      // keep what other tabs learned; X's answer beats a guess
+      if (!mine || (mine.s === "p" && e.s !== "p") || (mine.s === e.s && mine.t < e.t)) geo[h] = e;
     }
     const keys = Object.keys(geo);
     if (keys.length > GEO_CACHE_MAX) {
@@ -155,67 +183,22 @@
   }
 
   /* ================= lookups =================
-     Only authors on or near the screen are looked up, nearest first, and the
-     pace follows X's own rate-limit headers so the budget lasts the window. */
+     X allows ~50 "About this account" lookups per 15 minutes, shared by all
+     tabs through the background script. They go to the authors that matter
+     most: posts you're about to scroll to (so filtering is ready in time),
+     then on-screen authors with no location at all, then confirming guesses. */
 
-  const geoQueued = new Set();
-  const holds = new Map();             // handle -> time its posts stop waiting
-  let geoPausedUntil = 0;
+  const geoQueued = new Map();         // handle -> { filter: bool }
   let geoBroken = false;
   const badQids = new Set();
-  let geoLookups = 0;
-  let geoRemaining = NaN;
-  let geoLimit = NaN;
-  let geoResetAt = 0;
-  let geoNextAt = 0;
   let geoWorking = false;
-  const geoInFlight = new Set();
 
-  function geoStatus() {
-    chrome.storage.local.set({
-      siftGeoStatus: {
-        pausedUntil: geoPausedUntil, broken: geoBroken, lookups: geoLookups,
-        remaining: Number.isFinite(geoRemaining) ? geoRemaining : null, resetAt: geoResetAt, at: Date.now()
-      }
-    });
-  }
-
-  // Spend X's budget freely while plenty is left; once it runs low, stretch
-  // what remains across the rest of the window so labels never stop entirely.
-  function geoGap() {
-    if (!Number.isFinite(geoRemaining) || geoResetAt <= Date.now()) return GEO_MIN_GAP_MS;
-    const left = geoRemaining - GEO_RESERVE;
-    if (left <= 0) return geoResetAt - Date.now() + 1000;
-    const lowWater = Math.max(10, Number.isFinite(geoLimit) ? geoLimit * 0.2 : 10);
-    if (geoRemaining > lowWater) return GEO_MIN_GAP_MS;
-    return Math.max(GEO_MIN_GAP_MS, (geoResetAt - Date.now()) / left);
-  }
-
-  const canLookup = () => !geoBroken && Date.now() >= geoPausedUntil && !!csrf();
-  // Holding posts only makes sense while lookups come back fast.
-  const canHold = () => canLookup() && geoGap() <= GEO_HOLD_MAX_GAP_MS;
-
-  function requestGeo(handle) {
-    if (!handle || geoGet(handle) || geoQueued.has(handle)) return;
-    geoQueued.add(handle);
+  function requestGeo(handle, forFilter = false) {
+    if (!handle || isAuthoritative(handle)) return;
+    const q = geoQueued.get(handle);
+    if (q) { if (forFilter) q.filter = true; return; }
+    geoQueued.set(handle, { filter: forFilter });
     pumpGeo();
-  }
-
-  function hold(handle) {
-    if (holds.has(handle)) return true;
-    if (!canHold()) return false;
-    holds.set(handle, Date.now() + GEO_HOLD_MS);
-    setTimeout(() => releaseHold(handle), GEO_HOLD_MS + 30);
-    return true;
-  }
-
-  function releaseHold(handle) {
-    if (!holds.delete(handle)) return;
-    refreshHandle(handle);
-  }
-
-  function releaseAllHolds() {
-    for (const h of [...holds.keys()]) releaseHold(h);
   }
 
   function elementsFor(handle) {
@@ -223,62 +206,62 @@
     return document.querySelectorAll(`article[data-sift-h="${h}"], [data-sift-lh="${h}"]`);
   }
 
-  // Next handle to look up: the one closest to the middle of the screen.
   function nextHandle() {
     let best = null;
-    let bestDist = Infinity;
-    const mid = innerHeight / 2;
-    for (const h of [...geoQueued]) {
-      if (geoInFlight.has(h)) continue;
-      if (geoGet(h)) { geoQueued.delete(h); continue; }
-      let dist = Infinity;
+    let bestScore = Infinity;
+    for (const [h, q] of geoQueued) {
+      if (isAuthoritative(h)) { geoQueued.delete(h); continue; }
+      let top = Infinity;
       for (const el of elementsFor(h)) {
         const r = el.getBoundingClientRect();
         if (!r.width && !r.height) continue;
-        dist = Math.min(dist, Math.abs((r.top + r.bottom) / 2 - mid));
+        if (Math.abs(r.top - innerHeight / 2) < Math.abs(top - innerHeight / 2)) top = r.top;
       }
-      if (dist > innerHeight * 1.5) { geoQueued.delete(h); continue; } // scrolled away; re-queued if it comes back
-      if (holds.has(h)) dist -= 100000;   // posts being held back go first
-      if (dist < bestDist) { bestDist = dist; best = h; }
+      if (top === Infinity || top < -innerHeight || top > innerHeight * 3) { geoQueued.delete(h); continue; }
+      let score = Math.abs(top - innerHeight * 0.75);
+      if (q.filter && top > innerHeight * 0.5) score -= 200000;  // coming up: filter before it's seen
+      if (!geoGet(h)) score -= 100000;                          // nothing known yet
+      if (score < bestScore) { bestScore = score; best = h; }
     }
     return best;
+  }
+
+  function slot() {
+    return new Promise(resolve => {
+      try {
+        chrome.runtime.sendMessage({ type: "geo-slot" }, r => resolve(chrome.runtime.lastError ? { wait: 5000 } : r || { wait: 5000 }));
+      } catch { resolve({ wait: 10000 }); }
+    });
+  }
+
+  function report(res) {
+    const num = h => { const v = Number(res.headers.get(h)); return res.headers.has(h) && Number.isFinite(v) ? v : undefined; };
+    const reset = num("x-rate-limit-reset");
+    try {
+      chrome.runtime.sendMessage({
+        type: "geo-report", status: res.status,
+        limit: num("x-rate-limit-limit"), remaining: num("x-rate-limit-remaining"),
+        reset: reset ? reset * 1000 : undefined
+      }, () => void chrome.runtime.lastError);
+    } catch {}
   }
 
   async function pumpGeo() {
     if (geoWorking) return;
     geoWorking = true;
     try {
-      while (geoQueued.size > geoInFlight.size) {
-        if (!canLookup()) {
-          releaseAllHolds();
-          if (geoBroken || !csrf()) break;              // resumes when page.js reports a new query id
-          await sleep(Math.min(Math.max(1000, geoPausedUntil - Date.now()), 30000));
-          continue;
-        }
-        if (geoInFlight.size >= GEO_PARALLEL) { await sleep(40); continue; }
-        const wait = geoNextAt - Date.now();
-        if (wait > 0) {
-          if (wait > GEO_HOLD_MAX_GAP_MS) releaseAllHolds();
-          await sleep(Math.min(wait, 5000));
-          continue;
-        }
-        const handle = nextHandle();
+      while (geoQueued.size && !geoBroken && csrf()) {
+        if (!nextHandle()) break;
+        const s = await slot();
+        if (!s.ok) { await sleep(Math.min(Math.max(s.wait || 1000, 300), 4000)); continue; }
+        const handle = nextHandle();       // the screen may have moved while waiting
         if (!handle) break;
-        geoInFlight.add(handle);
-        geoNextAt = Date.now() + geoGap();
-        lookup(handle).finally(() => {
-          geoInFlight.delete(handle);
-          if (geoQueued.size > geoInFlight.size) pumpGeo();
-        });
+        geoQueued.delete(handle);
+        await lookup(handle);
       }
     } finally {
       geoWorking = false;
     }
-  }
-
-  function failLookup(handle) {
-    geoQueued.delete(handle);
-    releaseHold(handle);
   }
 
   async function lookup(handle) {
@@ -294,61 +277,75 @@
       });
     } catch {
       clearTimeout(timer);
-      return failLookup(handle);
-    }
-    clearTimeout(timer);
-
-    if (res.headers.has("x-rate-limit-remaining")) {
-      const rem = Number(res.headers.get("x-rate-limit-remaining"));
-      const reset = Number(res.headers.get("x-rate-limit-reset")) * 1000;
-      const lim = Number(res.headers.get("x-rate-limit-limit"));
-      if (Number.isFinite(rem)) geoRemaining = rem;
-      if (Number.isFinite(lim) && lim > 0) geoLimit = lim;
-      if (reset > Date.now()) geoResetAt = reset;
-    }
-
-    if (res.status === 429) {
-      geoPausedUntil = geoResetAt > Date.now() ? geoResetAt : Date.now() + GEO_FALLBACK_PAUSE_MS;
-      releaseAllHolds();
-      geoStatus();
-      return;                                   // stays queued; retried after the pause
-    }
-    if (res.status === 400 || res.status === 404) {
-      geoBroken = true;                         // stale query id; page.js hands us the new one
-      badQids.add(qid);
-      releaseAllHolds();
-      geoStatus();
       return;
     }
-    if (!res.ok) return failLookup(handle);
-
-    geoLookups++;
+    clearTimeout(timer);
+    report(res);
+    if (res.status === 429) return;
+    if (res.status === 400 || res.status === 404) {
+      geoBroken = true;                        // stale query id; page.js reports the new one
+      badQids.add(qid);
+      chrome.storage.local.get("siftGeoStatus").then(({ siftGeoStatus }) =>
+        chrome.storage.local.set({ siftGeoStatus: { ...(siftGeoStatus || {}), broken: true } }));
+      return;
+    }
+    if (!res.ok) return;
     try {
       const body = await res.json();
       const result = body?.data?.user_result_by_screen_name?.result;
-      if (!result && body?.errors?.length) return failLookup(handle);
+      if (!result && body?.errors?.length) return;
       geoSet(handle, result?.about_profile?.account_based_in || "");
-    } catch {
-      failLookup(handle);
-    }
-    geoStatus();
+    } catch {}
   }
 
-  // From page.js: X's own "About this account" requests.
+  // From page.js: authors found in X's own responses, and X's query id.
   window.addEventListener("message", e => {
     if (e.source !== window || !e.data || e.data.__sift !== true) return;
-    if (e.data.type === "qid" && /^[A-Za-z0-9_-]{10,40}$/.test(e.data.qid) && !badQids.has(e.data.qid)) {
-      if (e.data.qid !== qid || geoBroken) {
-        qid = e.data.qid;
+    const d = e.data;
+    if (d.type === "qid" && /^[A-Za-z0-9_-]{10,40}$/.test(d.qid) && !badQids.has(d.qid)) {
+      if (d.qid !== qid || geoBroken) {
+        qid = d.qid;
         geoBroken = false;
         chrome.storage.local.set({ siftQid: qid });
-        geoStatus();
+        chrome.storage.local.get("siftGeoStatus").then(({ siftGeoStatus }) =>
+          chrome.storage.local.set({ siftGeoStatus: { ...(siftGeoStatus || {}), broken: false } }));
         pumpGeo();
       }
-    } else if (e.data.type === "geo" && typeof e.data.handle === "string") {
-      geoSet(siftNormHandle(e.data.handle), String(e.data.based || ""));
+    } else if (d.type === "users" && Array.isArray(d.users)) {
+      for (const u of d.users.slice(0, 500)) {
+        const h = siftNormHandle(u?.h);
+        if (!h) continue;
+        if (u.b || u.about) geoSet(h, String(u.b || ""));
+        else if (u.l) geoGuess(h, String(u.l));
+      }
     }
   });
+
+  /* ================= seen posts =================
+     A post you've already looked at is never hidden afterwards, even if its
+     author's location arrives later. Late answers only filter posts further
+     down the feed that haven't been on screen yet. */
+
+  const SEEN_AFTER_MS = 500;            // on screen this long = you've seen it
+  const seenTimers = new WeakMap();
+  const seenObserver = new IntersectionObserver(entries => {
+    for (const en of entries) {
+      const a = en.target;
+      if (en.isIntersecting) {
+        if (seenTimers.has(a)) continue;
+        seenTimers.set(a, setTimeout(() => {
+          seenTimers.delete(a);
+          if (a.isConnected && nearViewport(a, 0)) {
+            a.dataset.siftSeen = "1";
+            seenObserver.unobserve(a);
+          }
+        }, SEEN_AFTER_MS));
+      } else if (seenTimers.has(a)) {
+        clearTimeout(seenTimers.get(a));
+        seenTimers.delete(a);
+      }
+    }
+  }, { threshold: 0.15 });
 
   /* ================= post parsing ================= */
 
@@ -407,7 +404,7 @@
   /* ================= rules ================= */
 
   function countryHit(handle) {
-    const g = geoGet(handle);
+    const g = geoUsable(handle);
     if (!g) return undefined;
     const cont = siftContinentOf(g.k);
     const label = cont && !g.k.startsWith("r:") ? `${siftGeoLabel(g.k, g.n)} · ${siftContinentName(cont)}` : siftGeoLabel(g.k, g.n);
@@ -420,7 +417,7 @@
     return rule ? { reason: "country", label, action: rule.action, handle, key: g.k } : null;
   }
 
-  // A hit, null, or "wait" when the author's country is still loading.
+  // A matching rule, or null.
   function evaluate(article, handle) {
     const u = handle ? rules.users.get(handle) : null;
     if (u && u.action === "allow") return null;
@@ -436,10 +433,7 @@
     if (handle && countryRulesOn()) {
       const c = countryHit(handle);
       if (c) return c;
-      if (c === undefined) {
-        requestGeo(handle);
-        if (S.holdForCountry && nearViewport(article, 1200) && hold(handle)) return "wait";
-      }
+      if (c === undefined || !isAuthoritative(handle)) requestGeo(handle, true);
     }
 
     if (S.hideVerified && isVerified(article)) return { reason: "verified", label: "Verified account", action: "hide", handle };
@@ -503,21 +497,27 @@
     if (handle) article.dataset.siftH = handle;
     if (article.dataset.siftRevealed) return;
 
+    if (!article.dataset.siftSeen) seenObserver.observe(article);
     const hit = evaluate(article, handle);
-    if (hit === "wait") {
-      // Keep the post's space so X's feed keeps loading; just veil it briefly.
-      article.classList.add("sift-wait");
-      return;
-    }
     if (hit) apply(article, hit, id !== "x" ? id : null);
   }
 
-  // Re-run the rules for an author's visible posts once their location is known.
+  // Re-run the rules for an author's posts once their location is known.
+  // Posts already seen are never hidden late; they can only be un-hidden.
   function refreshHandle(handle) {
     if (!lastActive) return;
     document.querySelectorAll(`article[data-sift-h="${CSS.escape(handle)}"]`).forEach(a => {
       if (a.dataset.siftRevealed) return;
+      const filtered = a.classList.contains("sift-hidden") || cellOf(a)?.classList.contains("sift-gone");
+      if (a.dataset.siftSeen && !filtered) return;
       unapplyArticle(a);
+      if (a.dataset.siftSeen) {
+        // was filtered; only keep it hidden if a rule still matches
+        a.dataset.sift = getStatusId(a) || "x";
+        const hit = evaluate(a, handle);
+        if (hit) apply(a, hit, null);
+        return;
+      }
       processArticle(a);
     });
   }
@@ -539,7 +539,7 @@
   }
 
   function unapplyArticle(article) {
-    article.classList.remove("sift-hidden", "sift-wait");
+    article.classList.remove("sift-hidden");
     const prev = article.previousElementSibling;
     if (prev && prev.classList.contains("sift-bar")) prev.remove();
     cellOf(article)?.classList.remove("sift-gone");
@@ -562,10 +562,16 @@
     const el = document.createElement("span");
     el.className = "sift-loc";
     el.dataset.h = handle;
-    el.dataset.k = g.k + "|" + S.flagStyle;
+    el.dataset.k = g.k + "|" + g.s + "|" + S.flagStyle;
     const name = siftGeoLabel(g.k, g.n);
     const cont = siftContinentOf(g.k);
-    el.title = `Account based in ${name}${cont && !g.k.startsWith("r:") ? ` · ${siftContinentName(cont)}` : ""}`;
+    const where = `${name}${cont && !g.k.startsWith("r:") ? ` · ${siftContinentName(cont)}` : ""}`;
+    if (g.s === "p") {
+      el.classList.add("sift-loc-guess");
+      el.title = `${where} — from their profile location “${g.r || name}”. X's “Account based in” hasn't loaded yet.`;
+    } else {
+      el.title = `Account based in ${where}`;
+    }
     const f = flagOf(g.k);
     if (f) {
       const fl = document.createElement("span");
@@ -595,12 +601,10 @@
         un.dataset.siftLh = handle;
       }
       const g = geoGet(handle);
-      if (!g) {
-        if (nearViewport(un)) requestGeo(handle);
-        return;
-      }
+      if ((!g || g.s === "p") && nearViewport(un)) requestGeo(handle);
+      if (!g) return;
       if (!g.k) { label?.remove(); return; }
-      if (label && label.dataset.h === handle && label.dataset.k === g.k + "|" + S.flagStyle && label.parentElement === row) return;
+      if (label && label.dataset.h === handle && label.dataset.k === g.k + "|" + g.s + "|" + S.flagStyle && label.parentElement === row) return;
       label?.remove();
       row.appendChild(buildLabel(handle, g));
     });
@@ -725,7 +729,12 @@
     const st = await chrome.storage.local.get(["siftBlocked", "siftBlockLog", "siftGeo", "siftQid"]);
     blockedSet = new Set(st.siftBlocked || []);
     blockLog = st.siftBlockLog || blockLog;
+    // keep anything learned while storage was loading
+    const early = geo;
     geo = st.siftGeo || {};
+    for (const [h, e] of Object.entries(early)) {
+      if (!geo[h] || geo[h].s === "p" || e.s !== "p") geo[h] = e;
+    }
     if (st.siftQid) qid = st.siftQid;
     compile();
     syncTheme(true);

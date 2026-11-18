@@ -10,10 +10,14 @@ Everything below is kept only in your browser's local extension storage, on your
 
 - Your rules: the countries, words and accounts you add, plus your settings.
 - Filtering counts: how many posts were filtered, and how many accounts were blocked.
-- A location cache that maps account handles to the country or region X reports for them. Entries expire after 30 days.
+- A location cache that maps account handles to a country or region. It holds either what X reports for the account (expires after 30 days) or a country matched from their public profile location (expires after 7 days).
 - A list of accounts Sift has blocked for you, so it doesn't block the same account twice.
 
 You can clear the location cache and the stats from the popup at any time. Uninstalling Sift deletes everything.
+
+## Reading X's responses
+
+To show locations without spending X's small lookup budget, Sift reads a copy of the data x.com already loads in your browser (feeds, replies and profiles), and takes each author's handle and profile location from it. This happens entirely on your device. X's requests and responses are passed through unchanged, and nothing is stored except the resulting country per handle.
 
 ## Network requests
 

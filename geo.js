@@ -143,3 +143,86 @@ function siftGeoLabel(key, name) {
   if (key.startsWith("c:")) return siftContinentName(key.slice(2));
   return name || key.slice(2);
 }
+
+/* ---------- profile-location fallback ----------
+   X allows ~50 "Account based in" lookups per 15 minutes, so until X's own
+   answer is known Sift falls back to the free-text location people put in
+   their profile ("Austin, TX", "London 🇬🇧", "Lagos"). Only clear matches
+   count; anything ambiguous returns null. */
+
+const SIFT_US_STATES = "alabama,alaska,arizona,arkansas,california,colorado,connecticut,delaware,florida,georgia,hawaii,idaho,illinois,indiana,iowa,kansas,kentucky,louisiana,maine,maryland,massachusetts,michigan,minnesota,mississippi,missouri,montana,nebraska,nevada,new hampshire,new jersey,new mexico,new york,north carolina,north dakota,ohio,oklahoma,oregon,pennsylvania,rhode island,south carolina,south dakota,tennessee,texas,utah,vermont,virginia,washington,west virginia,wisconsin,wyoming,washington dc,district of columbia";
+const SIFT_US_ABBR = new Set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split(" "));
+const SIFT_CA_ABBR = new Set("BC AB SK MB ON QC NS NB NL PE PEI YT NT NU".split(" "));
+const SIFT_CA_PROV = "ontario,quebec,british columbia,alberta,manitoba,saskatchewan,nova scotia,new brunswick,newfoundland,prince edward island";
+const SIFT_AU_STATES = "new south wales,nsw,queensland,qld,tasmania,western australia,south australia";
+const SIFT_NATIVE_NAMES = "deutschland:DE,españa:ES,espana:ES,italia:IT,brasil:BR,méxico:MX,österreich:AT,schweiz:CH,suisse:CH,polska:PL,nederland:NL,belgique:BE,sverige:SE,norge:NO,danmark:DK,suomi:FI,éire:IE,ελλάδα:GR,россия:RU,україна:UA,日本:JP,中国:CN,한국:KR,대한민국:KR,भारत:IN,مصر:EG,السعودية:SA,türkiye:TR,turkiye:TR,perú:PE,argentina:AR,colombia:CO,nigeria:NG,naija:NG,philippines:PH,pilipinas:PH";
+
+// Large cities people commonly put as their location.
+const SIFT_CITIES = "new york:US nyc:US los angeles:US la:US chicago:US houston:US phoenix:US philadelphia:US san antonio:US san diego:US dallas:US austin:US san francisco:US sf:US seattle:US denver:US boston:US atlanta:US miami:US detroit:US nashville:US portland:US las vegas:US orlando:US brooklyn:US manhattan:US washington dc:US dc:US " +
+  "toronto:CA montreal:CA vancouver:CA calgary:CA ottawa:CA edmonton:CA " +
+  "london:GB manchester:GB birmingham:GB liverpool:GB glasgow:GB edinburgh:GB leeds:GB bristol:GB cardiff:GB belfast:GB " +
+  "dublin:IE paris:FR marseille:FR lyon:FR berlin:DE munich:DE hamburg:DE frankfurt:DE cologne:DE amsterdam:NL rotterdam:NL brussels:BE madrid:ES barcelona:ES valencia:ES seville:ES lisbon:PT porto:PT rome:IT milan:IT naples:IT turin:IT vienna:AT zurich:CH geneva:CH stockholm:SE oslo:NO copenhagen:DK helsinki:FI warsaw:PL krakow:PL prague:CZ budapest:HU bucharest:RO athens:GR kyiv:UA kiev:UA moscow:RU st petersburg:RU saint petersburg:RU istanbul:TR ankara:TR " +
+  "tokyo:JP osaka:JP kyoto:JP seoul:KR busan:KR beijing:CN shanghai:CN shenzhen:CN guangzhou:CN hong kong:HK taipei:TW singapore:SG manila:PH jakarta:ID bangkok:TH kuala lumpur:MY hanoi:VN ho chi minh city:VN saigon:VN " +
+  "mumbai:IN bombay:IN delhi:IN new delhi:IN bangalore:IN bengaluru:IN hyderabad:IN chennai:IN kolkata:IN pune:IN ahmedabad:IN karachi:PK lahore:PK islamabad:PK dhaka:BD kathmandu:NP colombo:LK " +
+  "dubai:AE abu dhabi:AE riyadh:SA jeddah:SA doha:QA kuwait city:KW tehran:IR baghdad:IQ tel aviv:IL jerusalem:IL beirut:LB amman:JO cairo:EG " +
+  "lagos:NG abuja:NG accra:GH nairobi:KE johannesburg:ZA cape town:ZA durban:ZA addis ababa:ET casablanca:MA tunis:TN algiers:DZ kampala:UG dar es salaam:TZ " +
+  "mexico city:MX cdmx:MX guadalajara:MX monterrey:MX sao paulo:BR são paulo:BR rio de janeiro:BR brasilia:BR buenos aires:AR santiago:CL lima:PE bogota:CO bogotá:CO medellin:CO caracas:VE quito:EC montevideo:UY " +
+  "sydney:AU melbourne:AU brisbane:AU perth:AU adelaide:AU auckland:NZ wellington:NZ";
+
+let _siftPlaces = null;
+function siftPlaces() {
+  if (_siftPlaces) return _siftPlaces;
+  const m = new Map();
+  const add = (list, code) => list.split(",").forEach(n => m.set(siftGeoNorm(n), code));
+  add(SIFT_US_STATES, "US");
+  add(SIFT_CA_PROV, "CA");
+  add(SIFT_AU_STATES, "AU");
+  for (const pair of SIFT_NATIVE_NAMES.split(",")) {
+    const [name, code] = pair.split(":");
+    m.set(siftGeoNorm(name) || name.toLowerCase(), code);
+  }
+  for (const pair of SIFT_CITIES.match(/[^:]+:[A-Z]{2}/g)) {
+    const [name, code] = pair.trim().split(":");
+    m.set(siftGeoNorm(name), code);
+  }
+  m.delete("georgia"); // US state or country: decided below
+  _siftPlaces = m;
+  return m;
+}
+
+// Best-effort country for a free-text profile location, or null.
+function siftGuessCountry(text) {
+  const raw = String(text || "").trim();
+  if (!raw || raw.length > 80) return null;
+  const found = new Set();
+
+  // flag emoji anywhere
+  const flags = raw.match(/[\u{1F1E6}-\u{1F1FF}]{2}/gu) || [];
+  for (const f of flags) { const c = siftCodeFromFlag(f); if (c) found.add(c); }
+
+  const t = siftGeoTable();
+  const places = siftPlaces();
+  const pieces = raw.split(/[,/|·•\-–—()\n]+|\s+(?:and|&|x)\s+/i).map(s => s.trim()).filter(Boolean);
+  let georgia = false;
+  for (const piece of pieces) {
+    if (/^[A-Z]{2,3}$/.test(piece) && pieces.length > 1) {
+      if (SIFT_US_ABBR.has(piece)) { found.add("US"); continue; }
+      if (SIFT_CA_ABBR.has(piece)) { found.add("CA"); continue; }
+    }
+    const clean = piece.replace(/[\u{1F1E6}-\u{1F1FF}]/gu, "").trim();
+    const n = siftGeoNorm(clean) || clean.toLowerCase();
+    if (!n) continue;
+    if (n === "georgia") { georgia = true; continue; }
+    const code = places.get(n) || t.byName.get(n);
+    if (code) found.add(code);
+  }
+  // "Atlanta, Georgia" is the US state; "Georgia" or "Tbilisi, Georgia" is the country
+  if (georgia) found.add(found.has("US") ? "US" : "GE");
+  if (!found.size) {
+    // whole string, e.g. "new york city"
+    const n = siftGeoNorm(raw.replace(/\bcity\b/gi, ""));
+    const code = t.byName.get(n) || places.get(n);
+    if (code) found.add(code);
+  }
+  return found.size === 1 ? [...found][0] : null;
+}

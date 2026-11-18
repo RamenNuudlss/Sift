@@ -286,20 +286,27 @@
 
   function renderGeoStatus() {
     const el = $("#geoStatus");
-    const total = Object.keys(geoCache).length;
-    const parts = [];
-    if (total) parts.push(`${fmt.format(total)} account${total === 1 ? "" : "s"} located`);
-    const st = geoStatusInfo;
-    let warn = "";
-    if (st?.broken) warn = "X changed its location lookup. Open “About this account” on any profile once and Sift will pick up the new one.";
-    else if (st && st.pausedUntil > Date.now()) {
-      const t = new Date(st.pausedUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-      warn = `X rate limit reached — lookups resume at ${t}. Cached accounts still filter.`;
-    }
     el.replaceChildren();
-    if (parts.length) el.append(parts.join(" · "));
+    const entries = Object.values(geoCache);
+    const now = Date.now();
+    const exact = entries.filter(e => e.s !== "p" && e.k && now - e.t < SIFT_GEO_TTL).length;
+    const guessed = entries.filter(e => e.s === "p" && now - e.t < 7 * 24 * 3600 * 1000).length;
+    const lines = [];
+    if (exact || guessed) lines.push(`${fmt.format(exact)} confirmed by X · ${fmt.format(guessed)} from profiles`);
+
+    const st = geoStatusInfo;
+    const time = t => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    let warn = "";
+    if (st?.broken) {
+      warn = "X changed its location lookup. Open “About this account” on any profile once and Sift will pick up the new one.";
+    } else if (st && st.pausedUntil > now) {
+      warn = `X’s lookup limit reached. Lookups resume at ${time(st.pausedUntil)}; profile locations keep working.`;
+    } else if (st && st.reset > now && Number.isFinite(st.remaining)) {
+      lines.push(`X lookups left: ${Math.max(0, st.remaining)} of ${st.limit || 50} · refills at ${time(st.reset)}`);
+    }
+    lines.forEach((l, i) => { if (i) el.append(document.createElement("br")); el.append(l); });
     if (warn) {
-      if (parts.length) el.append(document.createElement("br"));
+      if (lines.length) el.append(document.createElement("br"));
       const w = document.createElement("span");
       w.className = "warn";
       w.textContent = warn;

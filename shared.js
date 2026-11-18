@@ -14,7 +14,7 @@ const SIFT_DEFAULTS = {
   countryMode: "hide",       // "hide" = hide selected, "only" = only show selected
   showFlags: true,           // location label next to every author name
   flagStyle: "full",        // "full" = flag + country, "flag" = flag only
-  holdForCountry: true,
+  useProfileLocation: true,  // fall back to profile location text until X's answer is known
   hideUnknownCountry: false
 };
 

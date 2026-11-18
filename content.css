@@ -119,19 +119,6 @@
   font-display: swap;
 }
 
-/* A post waiting for its author's location keeps its space (so X's feed
-   keeps loading) and is veiled for a moment instead of flashing in. */
-article.sift-wait {
-  filter: blur(7px);
-  opacity: 0.35;
-  pointer-events: none;
-  user-select: none;
-}
-
-article[data-sift] {
-  transition: filter 0.2s ease, opacity 0.2s ease;
-}
-
 /* Location label after the author's name — matches X's own secondary text. */
 .sift-loc {
   display: inline-flex;
@@ -155,6 +142,10 @@ article[data-sift] {
   line-height: 1;
   position: relative;
   top: 0.5px;
+}
+
+.sift-loc-guess {
+  opacity: 0.72;
 }
 
 .sift-loc-name {

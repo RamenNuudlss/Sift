@@ -34,11 +34,14 @@
 
 ## How country lookups work
 
-- Sift calls the same endpoint x.com uses for *About this account* (`AboutAccountQuery`), using your existing logged-in session. It doesn't use any other service.
-- Results are cached on your device for 30 days. Accounts with no location are cached for 1 day.
-- Only authors on or near your screen are looked up, nearest first, up to three at a time. Sift spends X's lookup budget freely while plenty is left, then stretches the rest across the rate-limit window. If X rate-limits you, posts that are already cached keep filtering, and the popup shows when lookups will resume.
-- **Wait for location** briefly blurs a post (up to 3.5 seconds, usually under 1) while its author's country loads, so filtered posts never flash onto your screen. The post keeps its space, so X's feed keeps loading normally. If a lookup is slow or fails, the post is shown.
-- When X changes the query ID, Sift picks up the new one the next time X itself loads an *About this account* panel. Sift never wraps or modifies X's own requests.
+X only allows about **50 "About this account" lookups per account every 15 minutes**, so Sift can't ask X about every author. Instead:
+
+1. **Profile location first.** X's feed and reply data already include each author's profile location ("Austin, TX", "London 🇬🇧", "Lagos"). Sift reads a copy of that data in your browser and turns clear matches into a country instantly, at no lookup cost. These labels are slightly faded. Ambiguous text like "London, ON" or "Earth" is ignored. You can turn this off in Options.
+2. **X's own answer when it matters.** The 50 real lookups go to the authors that need them most. First come posts just below your screen (so filtering is ready before you scroll to them), then authors with no usable profile location, then confirming guesses. X's "Account based in" always replaces a profile guess.
+3. **One shared budget.** All your X tabs share the budget through the background script. The first half of each window is spent quickly, and the rest is spread over the remaining minutes. The popup shows how many lookups are left and when they refill.
+4. **Nothing disappears while you read.** Once a post has been on screen for half a second, a late answer can no longer hide it. Late answers only filter posts further down that you haven't reached yet.
+
+Locations are cached on your device: X's answers for 30 days, profile guesses for 7 days. When X changes its lookup ID, Sift picks up the new one from X's own requests.
 
 ## Privacy
 
