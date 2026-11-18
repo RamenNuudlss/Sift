@@ -10,7 +10,7 @@ Upload `dist/sift-1.0.0.zip` (create it with `build.ps1`).
 **Name** (taken from the manifest): Sift — Country & Keyword Filter for X
 
 **Summary** (max 132 characters):
-Filter your X For You feed by country, words and accounts. Hide posts or auto-block the accounts behind them.
+Filter your X For You feed by country, continent, words and accounts. Hide posts or auto-block the accounts behind them.
 
 **Category:** Social & Communication
 **Language:** English
@@ -19,8 +19,8 @@ Filter your X For You feed by country, words and accounts. Hide posts or auto-bl
 ```
 Sift cleans up your X (Twitter) For You feed.
 
-FILTER BY COUNTRY
-X shows where an account is based in its "About this account" panel. Sift reads that for each author in your feed. Then it either hides posts from the countries and regions you pick, or shows only the ones you allow. A small flag next to each post shows where it's from.
+FILTER BY COUNTRY OR CONTINENT
+X shows where an account is based in its "About this account" panel. Sift reads that for each author in your feed. Then it either hides posts from the countries, regions or whole continents you pick, or shows only the ones you allow. A small flag next to each post shows where it's from.
 
 FILTER BY WORDS AND ACCOUNTS
 • Words, phrases or /regex/, with whole-word matching
@@ -57,7 +57,7 @@ Not affiliated with X Corp.
 
 **Single purpose:**
 ```
-Filters posts on the X (Twitter) home timeline based on the user's own rules: the account's country, words in the post, and specific accounts.
+Filters posts on the X (Twitter) home timeline based on the user's own rules: the account's country or continent, words in the post, and specific accounts.
 ```
 
 **Permission justifications:**

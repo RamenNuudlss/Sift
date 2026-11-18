@@ -4,8 +4,8 @@ const MENU_HIDE = "sift-hide-account";
 const MENU_ALLOW = "sift-allow-account";
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const current = await siftLoad();
-  await siftSave(current); // write defaults on first install
+  const { sift } = await chrome.storage.local.get("sift");
+  if (!sift) await siftSave({ ...SIFT_DEFAULTS }); // first install only
 
   chrome.contextMenus.removeAll(() => {
     const common = {

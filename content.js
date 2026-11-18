@@ -352,15 +352,17 @@
   function countryHit(handle) {
     const g = geoGet(handle);
     if (!g) return undefined;
+    const cont = siftContinentOf(g.k);
+    const label = cont ? `${siftGeoLabel(g.k, g.n)} · ${siftContinentName(cont)}` : siftGeoLabel(g.k, g.n);
+    // a specific country/region rule wins over its continent
+    const rule = g.k ? rules.countries.get(g.k) || (cont && rules.countries.get("c:" + cont)) : null;
+
     if (S.countryMode === "only") {
       if (!g.k) return S.hideUnknownCountry ? { reason: "country", label: "No location", action: "hide", handle } : null;
-      if (S.countries.length && !rules.countries.has(g.k)) {
-        return { reason: "country", label: siftGeoLabel(g.k, g.n), action: "hide", handle, key: g.k };
-      }
+      if (S.countries.length && !rule) return { reason: "country", label, action: "hide", handle, key: g.k };
       return null;
     }
-    const rule = g.k && rules.countries.get(g.k);
-    return rule ? { reason: "country", label: siftGeoLabel(g.k, g.n), action: rule.action, handle, key: g.k } : null;
+    return rule ? { reason: "country", label, action: rule.action, handle, key: g.k } : null;
   }
 
   // Returns a hit, null, or "wait" when the author's country isn't known yet.

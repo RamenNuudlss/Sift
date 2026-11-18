@@ -224,6 +224,12 @@
       const term = document.createElement("span");
       term.className = "term";
       term.textContent = siftGeoLabel(c.key, c.name);
+      if (c.key.startsWith("c:")) {
+        const note = document.createElement("span");
+        note.className = "kind";
+        note.textContent = "Continent";
+        term.append(note);
+      }
       const li = rowEl(term, S.countryMode === "only" ? "show" : c.action,
         () => { if (S.countryMode === "only") return; c.action = cycleWords[c.action] || "hide"; save(); renderCountries(); },
         () => { S.countries.splice(i, 1); save(); renderCountries(); });
@@ -235,6 +241,25 @@
       ? "Only posts from accounts based in the countries you add here will show. Everything else is filtered."
       : "Posts from accounts X lists as based in a country you add here are filtered out of your feed.";
     $("#cCountries").textContent = S.countries.length || "";
+
+    const cc = $("#continentChips");
+    cc.replaceChildren();
+    for (const [code, name] of SIFT_CONTINENTS) {
+      const key = "c:" + code;
+      const rule = S.countries.find(c => c.key === key);
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cont";
+      b.setAttribute("aria-pressed", !!rule);
+      if (rule) b.classList.add(S.countryMode === "only" ? "show" : rule.action);
+      b.textContent = name;
+      b.title = rule ? `Remove ${name}` : `Add all of ${name}`;
+      b.addEventListener("click", () => {
+        if (rule) { S.countries.splice(S.countries.indexOf(rule), 1); save(); renderCountries(); }
+        else addCountry(key, name);
+      });
+      cc.append(b);
+    }
 
     const seen = seenCounts().slice(0, 14);
     $("#seenWrap").hidden = seen.length === 0;
@@ -295,7 +320,11 @@
   function searchCountries(q) {
     const n = siftGeoNorm(q);
     if (!n) return [];
-    const all = [...geoTable.list.map(c => ({ key: c.code, name: c.name })), ...regionOptions()];
+    const all = [
+      ...SIFT_CONTINENTS.map(([code, name]) => ({ key: "c:" + code, name, kind: "Continent" })),
+      ...geoTable.list.map(c => ({ key: c.code, name: c.name })),
+      ...regionOptions()
+    ];
     const aliasHits = [...geoTable.byName.entries()].filter(([k]) => k.startsWith(n)).map(([, code]) => code);
     const scored = [];
     for (const c of all) {
@@ -337,6 +366,12 @@
       name.className = "r-name";
       name.textContent = c.name;
       li.append(flagEl(c.key), name);
+      if (c.kind && !S.countries.some(x => x.key === c.key)) {
+        const note = document.createElement("span");
+        note.className = "r-note";
+        note.textContent = c.kind;
+        li.append(note);
+      }
       if (S.countries.some(x => x.key === c.key)) {
         const note = document.createElement("span");
         note.className = "r-note";
@@ -439,7 +474,7 @@
         if (ex) ex.action = action; else S.users.push({ handle, action });
       }
       for (const c of Array.isArray(data.countries) ? data.countries : []) {
-        if (typeof c?.key !== "string" || !/^([A-Z]{2}|r:[a-z0-9 ]+)$/.test(c.key)) continue;
+        if (typeof c?.key !== "string" || !/^([A-Z]{2}|r:[a-z0-9 ]+|c:(AF|AS|EU|NA|SA|OC))$/.test(c.key)) continue;
         if (!S.countries.some(x => x.key === c.key)) {
           S.countries.push({ key: c.key, name: String(c.name || ""), action: c.action === "block" ? "block" : "hide" });
         }

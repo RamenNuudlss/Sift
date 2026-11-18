@@ -4,7 +4,7 @@
 
 <h1 align="center">Sift</h1>
 
-<p align="center">Filter your X For You feed by country, words and accounts.</p>
+<p align="center">Filter your X For You feed by country, continent, words and accounts.</p>
 
 <p align="center">
   <img src="store/screenshot-1-countries.png" width="760" alt="Sift popup showing country rules">
@@ -12,7 +12,8 @@
 
 ## Features
 
-- **Country filtering.** X shows where an account is based in its *About this account* panel. Sift reads that for each author in your feed. Then it either hides or blocks posts from the countries and regions you pick, or shows only the ones you allow.
+- **Country filtering.** X shows where an account is based in its *About this account* panel. Sift reads that for each author in your feed. Then it either hides or blocks posts from the countries, regions or whole continents you pick, or shows only the ones you allow.
+- **Continents.** One click covers Africa, Asia, Europe, North America, South America or Oceania, including the regions X reports, like "West Asia". A rule for a specific country overrides its continent.
 - **Flags on posts.** A small flag next to each post's timestamp. It renders properly on Windows too.
 - **Word rules.** Words, phrases or `/regex/`. Matching is whole-word, so `crypto` won't catch "cryptography".
 - **Account rules.** Hide, block or always allow specific accounts. You can also right-click any profile link on X.
